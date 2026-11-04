@@ -1,19 +1,29 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { getExerciseCount } from '../db/client';
+import { Redirect } from 'expo-router';
+import { getDatabase } from '../db/client';
+import { getUserProfile } from '../db/repository';
 import hu from '../i18n/hu';
-import { colors, radius, spacing, typography } from '../theme/tokens';
+import { colors, spacing, typography } from '../theme/tokens';
 
+type Destination = '/(tabs)' | '/onboarding';
+
+/**
+ * Entry gate: runs after the root layout has initialized the database, then
+ * routes to onboarding the first time and to the tabs once a profile exists.
+ */
 export default function Index() {
-  const [count, setCount] = useState<number | null>(null);
+  const [destination, setDestination] = useState<Destination | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getExerciseCount()
-      .then((value) => {
+
+    getDatabase()
+      .then((db) => getUserProfile(db))
+      .then((profile) => {
         if (!cancelled) {
-          setCount(value);
+          setDestination(profile === null ? '/onboarding' : '/(tabs)');
         }
       })
       .catch((cause: unknown) => {
@@ -21,30 +31,31 @@ export default function Index() {
           setError(cause instanceof Error ? cause.message : String(cause));
         }
       });
+
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const isLoading = count === null && error === null;
-
-  return (
-    <View style={styles.container}>
-      <Text style={styles.appName}>{hu.app.name}</Text>
-      <Text style={styles.subtitle}>{hu.db.runtimeReady}</Text>
-
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>{hu.db.exerciseCountLabel}</Text>
-        {isLoading ? (
-          <ActivityIndicator color={colors.accent} />
-        ) : error !== null ? (
-          <Text style={styles.cardError}>{error}</Text>
-        ) : (
-          <Text style={styles.cardValue}>{count}</Text>
-        )}
+  if (error !== null) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.errorTitle}>{hu.common.error}</Text>
+        <Text style={styles.errorDetail}>{error}</Text>
       </View>
-    </View>
-  );
+    );
+  }
+
+  if (destination === null) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator color={colors.accent} size="large" />
+        <Text style={styles.loading}>{hu.common.loading}</Text>
+      </View>
+    );
+  }
+
+  return <Redirect href={destination} />;
 }
 
 const styles = StyleSheet.create({
@@ -55,43 +66,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     padding: spacing.xl,
   },
-  appName: {
-    color: colors.textPrimary,
-    fontSize: typography.sizes.display,
-    fontWeight: typography.weights.bold,
-  },
-  subtitle: {
+  loading: {
+    marginTop: spacing.lg,
     color: colors.textSecondary,
     fontSize: typography.sizes.md,
-    marginTop: spacing.sm,
-    textAlign: 'center',
   },
-  card: {
-    marginTop: spacing.xxl,
-    minWidth: 220,
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radius.lg,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.xl,
-  },
-  cardLabel: {
-    color: colors.textSecondary,
-    fontSize: typography.sizes.sm,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  cardValue: {
-    marginTop: spacing.sm,
-    color: colors.accent,
-    fontSize: typography.sizes.display,
-    fontWeight: typography.weights.bold,
-  },
-  cardError: {
-    marginTop: spacing.sm,
+  errorTitle: {
     color: colors.danger,
+    fontSize: typography.sizes.lg,
+    fontWeight: typography.weights.semibold,
+  },
+  errorDetail: {
+    marginTop: spacing.sm,
+    color: colors.textMuted,
     fontSize: typography.sizes.sm,
     textAlign: 'center',
   },

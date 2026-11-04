@@ -6,6 +6,7 @@ import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrate } from './schema';
 import { seedExerciseCatalog } from './seed';
+import { seedDefaultTemplates } from './repository';
 
 export const DATABASE_NAME = 'workout.db';
 
@@ -13,8 +14,9 @@ let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 /**
  * Returns the shared database instance, initializing it on first call:
- * open -> migrate -> seed. The promise is cached, so initialization runs once
- * per app process and concurrent callers await the same work.
+ * open -> migrate -> seed catalog -> seed templates. The promise is cached, so
+ * initialization runs once per app process and concurrent callers await the
+ * same work.
  */
 export function getDatabase(): Promise<SQLiteDatabase> {
   if (databasePromise === null) {
@@ -22,6 +24,7 @@ export function getDatabase(): Promise<SQLiteDatabase> {
       const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
       await migrate(db);
       await seedExerciseCatalog(db);
+      await seedDefaultTemplates(db);
       return db;
     })();
   }

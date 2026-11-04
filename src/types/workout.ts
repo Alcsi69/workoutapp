@@ -64,6 +64,16 @@ export interface OnboardingPayload {
   };
 }
 
+/**
+ * Persisted onboarding result. Structurally identical to OnboardingPayload plus
+ * the bookkeeping columns the profile row carries, so `getUserProfile` and
+ * `saveOnboardingPayload` stay symmetric.
+ */
+export interface UserProfile extends OnboardingPayload {
+  onboardingCompletedAt: string; // ISO-8601
+  updatedAt: string; // ISO-8601
+}
+
 export type ExerciseCategory =
   | 'compound_lower'
   | 'compound_upper'
@@ -126,4 +136,32 @@ export interface WorkoutSessionLog {
   exerciseBlocks: WorkoutExerciseBlock[];
   runningMetrics?: RunningMetrics;
   syncStatus: SyncStatus;
+}
+
+// --- Program templates (seeded, read-mostly) -------------------------------
+
+export interface TemplateExerciseBlock {
+  id: string;
+  templateId: string;
+  orderIndex: number;
+  exerciseId: string;
+  substitutedFromExerciseId?: string;
+  restSeconds: number;
+  notes?: string;
+  targetSets?: number;
+  targetReps?: string;
+}
+
+export interface WorkoutTemplate {
+  id: string;
+  title: string;
+  sessionType: SessionType;
+  goal?: TrainingGoal;
+  createdAt: string;
+  exercises: WorkoutTemplateExercise[];
+}
+
+/** A template block hydrated with its catalog entry (join of the two tables). */
+export interface WorkoutTemplateExercise extends TemplateExerciseBlock {
+  exercise: ExerciseCatalogItem;
 }

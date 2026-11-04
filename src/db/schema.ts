@@ -18,7 +18,7 @@ import type {
   TrainingGoal,
 } from '../types/workout';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export interface Migration {
   version: number;
@@ -127,6 +127,34 @@ export const migrations: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_session_logs_sync ON session_logs(sync_status);`,
     ],
   },
+  {
+    version: 2,
+    statements: [
+      // --- Persisted onboarding profile -------------------------------------
+      // One row per user. JSON-encoded columns hold excluded ids and the
+      // preferredSubstitutions record ({"hack_squat": "belt_squat", ...}).
+      `CREATE TABLE IF NOT EXISTS user_profiles (
+        id TEXT PRIMARY KEY NOT NULL,
+        locale TEXT NOT NULL,                     -- 'hu' | 'en'
+        age INTEGER NOT NULL,
+        weight_kg REAL NOT NULL,
+        height_cm REAL NOT NULL,
+        primary_goal TEXT NOT NULL,               -- TrainingGoal
+        experience_months INTEGER NOT NULL,
+        strength_days_per_week INTEGER NOT NULL,
+        running_days_per_week INTEGER NOT NULL,
+        target_run_distance_km REAL,
+        session_duration_minutes INTEGER NOT NULL,
+        equipment TEXT NOT NULL,                  -- EquipmentTier
+        excluded_exercise_ids TEXT NOT NULL DEFAULT '[]',      -- JSON string[]
+        preferred_substitutions TEXT NOT NULL DEFAULT '{}',    -- JSON Record<string,string>
+        onboarding_completed_at TEXT NOT NULL,    -- ISO-8601
+        updated_at TEXT NOT NULL                  -- ISO-8601
+      );`,
+
+      `CREATE INDEX IF NOT EXISTS idx_joint_constraints_user ON joint_constraints(user_id);`,
+    ],
+  },
 ];
 
 /**
@@ -217,6 +245,58 @@ export interface JointConstraintRow {
   severity: JointConstraintSeverity;
   notes: string | null;
   created_at: string;
+}
+
+export interface UserProfileRow {
+  id: string;
+  locale: 'hu' | 'en';
+  age: number;
+  weight_kg: number;
+  height_cm: number;
+  primary_goal: TrainingGoal;
+  experience_months: number;
+  strength_days_per_week: number;
+  running_days_per_week: number;
+  target_run_distance_km: number | null;
+  session_duration_minutes: number;
+  equipment: EquipmentTier;
+  excluded_exercise_ids: string; // JSON string[]
+  preferred_substitutions: string; // JSON Record<string, string>
+  onboarding_completed_at: string;
+  updated_at: string;
+}
+
+export interface WorkoutTemplateRow {
+  id: string;
+  title: string;
+  session_type: SessionType;
+  goal: TrainingGoal | null;
+  created_at: string;
+}
+
+export interface TemplateExerciseBlockRow {
+  id: string;
+  template_id: string;
+  order_index: number;
+  exercise_id: string;
+  substituted_from_exercise_id: string | null;
+  rest_seconds: number;
+  notes: string | null;
+  target_sets: number | null;
+  target_reps: string | null;
+}
+
+/** Template block joined with its catalog entry (used by getWorkoutTemplates). */
+export interface TemplateExerciseJoinRow extends TemplateExerciseBlockRow {
+  /** Catalog primary key, aliased so it does not collide with the block id. */
+  catalog_id: string;
+  name_hu: string;
+  name_en: string;
+  category: ExerciseCategory;
+  primary_muscles: string; // JSON string[]
+  axial_load_score: LoadScore;
+  knee_stress_score: LoadScore;
+  default_substitute_ids: string; // JSON string[]
 }
 
 // Keep the domain unions referenced so the row shapes stay aligned with the API surface.

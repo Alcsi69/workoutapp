@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "module": "node16",
+    "moduleResolution": "node16",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "noEmit": false,
+    "outDir": "../.verify-build",
+    "rootDir": "../src"
+  },
+  "include": [
+    "../src/types/workout.ts",
+    "../src/db/schema.ts",
+    "../src/db/seed.ts",
+    "../src/db/repository.ts",
+    "../src/services/recommendation.ts",
+    "../src/store/useOnboardingStore.ts"
+  ]
+}

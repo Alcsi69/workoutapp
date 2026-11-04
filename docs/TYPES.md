@@ -88,3 +88,49 @@ export interface WorkoutSessionLog {
   runningMetrics?: RunningMetrics;
   syncStatus: 'local_dirty' | 'synced';
 }
+
+// --- Phase 2: persisted profile & seeded program templates -------------------
+
+/** OnboardingPayload plus the persistence bookkeeping columns. */
+export interface UserProfile extends OnboardingPayload {
+  onboardingCompletedAt: string;
+  updatedAt: string;
+}
+
+export interface TemplateExerciseBlock {
+  id: string;
+  templateId: string;
+  orderIndex: number;
+  exerciseId: string;
+  substitutedFromExerciseId?: string;
+  restSeconds: number;
+  notes?: string;
+  targetSets?: number;
+  targetReps?: string;
+}
+
+/** Template block joined with its catalog entry (hydrated by getWorkoutTemplates). */
+export interface WorkoutTemplateExercise extends TemplateExerciseBlock {
+  exercise: ExerciseCatalogItem;
+}
+
+export interface WorkoutTemplate {
+  id: string;
+  title: string;
+  sessionType: 'strength' | 'running' | 'hybrid';
+  goal?: TrainingGoal;
+  createdAt: string;
+  exercises: WorkoutTemplateExercise[];
+}
+
+export interface SessionHistorySummary {
+  id: string;
+  title: string;
+  sessionType: 'strength' | 'running' | 'hybrid';
+  startedAt: string;
+  completedAt: string;
+  syncStatus: 'local_dirty' | 'synced';
+  exerciseCount: number;
+  distanceKm?: number;
+  durationSeconds?: number;
+}
