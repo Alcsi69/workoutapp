@@ -17,6 +17,7 @@
     "../src/db/seed.ts",
     "../src/db/repository.ts",
     "../src/services/recommendation.ts",
-    "../src/store/useOnboardingStore.ts"
+    "../src/store/useOnboardingStore.ts",
+    "../src/store/useActiveWorkoutStore.ts"
   ]
 }

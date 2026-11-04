@@ -49,3 +49,14 @@ export function formatDurationHu(seconds: number): string {
   const pad = (value: number): string => value.toString().padStart(2, '0');
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${minutes}:${pad(rest)}`;
 }
+
+/** "5:30" per kilometre, or an em dash when no pace can be derived. */
+export function formatPaceHu(secondsPerKm: number): string {
+  if (!(secondsPerKm > 0)) {
+    return '—';
+  }
+  const total = Math.round(secondsPerKm);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}

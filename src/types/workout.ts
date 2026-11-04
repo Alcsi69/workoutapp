@@ -113,7 +113,20 @@ export interface WorkoutExerciseBlock {
   substitutedFromExerciseId?: string;
   restSeconds: number;
   notes?: string;
+  /** Prescription copied from the template (absent for ad-hoc blocks). */
+  targetSets?: number;
+  targetReps?: string;
   sets: SetLog[];
+}
+
+/**
+ * A logged session block hydrated with its catalog entry — the shape the
+ * workout logger renders. `exercise` is the *effective* exercise (the
+ * substitute when the block was swapped mid-workout).
+ */
+export interface SessionExerciseBlock extends WorkoutExerciseBlock {
+  sessionId: string;
+  exercise: ExerciseCatalogItem;
 }
 
 export interface RunningMetrics {
@@ -133,7 +146,7 @@ export interface WorkoutSessionLog {
   title: string; // e.g., "Lower Body B (RDL Focus)" or "5K Tempo Run"
   startedAt: string;
   completedAt?: string;
-  exerciseBlocks: WorkoutExerciseBlock[];
+  exerciseBlocks: SessionExerciseBlock[];
   runningMetrics?: RunningMetrics;
   syncStatus: SyncStatus;
 }

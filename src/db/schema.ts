@@ -18,7 +18,7 @@ import type {
   TrainingGoal,
 } from '../types/workout';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export interface Migration {
   version: number;
@@ -155,6 +155,17 @@ export const migrations: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_joint_constraints_user ON joint_constraints(user_id);`,
     ],
   },
+  {
+    version: 3,
+    statements: [
+      // --- Session blocks carry their prescription --------------------------
+      // The logger shows the target rep range per block, so the copied session
+      // block keeps the template's target_sets/target_reps. SQLite requires one
+      // ALTER per column; both are nullable so existing rows stay valid.
+      `ALTER TABLE session_exercise_blocks ADD COLUMN target_sets INTEGER;`,
+      `ALTER TABLE session_exercise_blocks ADD COLUMN target_reps TEXT;`,
+    ],
+  },
 ];
 
 /**
@@ -215,6 +226,21 @@ export interface SessionExerciseBlockRow {
   substituted_from_exercise_id: string | null;
   rest_seconds: number;
   notes: string | null;
+  target_sets: number | null;
+  target_reps: string | null;
+}
+
+/** Session block joined with its catalog entry (used by getSessionDetail). */
+export interface SessionExerciseJoinRow extends SessionExerciseBlockRow {
+  /** Catalog primary key, aliased so it does not collide with the block id. */
+  catalog_id: string;
+  name_hu: string;
+  name_en: string;
+  category: ExerciseCategory;
+  primary_muscles: string; // JSON string[]
+  axial_load_score: LoadScore;
+  knee_stress_score: LoadScore;
+  default_substitute_ids: string; // JSON string[]
 }
 
 export interface SetLogRow {

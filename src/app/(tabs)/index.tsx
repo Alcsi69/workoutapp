@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
@@ -92,10 +92,8 @@ export default function WorkoutHomeScreen() {
     setStarting(true);
     try {
       const db = await getDatabase();
-      await startSessionFromTemplate(db, template);
-      const active = await getActiveSession(db);
-      setData((current) => (current === null ? current : { ...current, active }));
-      Alert.alert(hu.screens.home.activeSession, hu.screens.home.startedHint);
+      const sessionId = await startSessionFromTemplate(db, template);
+      router.push(`/workout/${sessionId}`);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -145,6 +143,10 @@ export default function WorkoutHomeScreen() {
           <Text style={styles.muted}>
             {active.exerciseCount} {hu.screens.home.blocksLabel}
           </Text>
+          <Button
+            label={hu.screens.home.resume}
+            onPress={() => router.push(`/workout/${active.id}`)}
+          />
         </Card>
       ) : null}
 

@@ -1,11 +1,12 @@
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
+import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { Pill, loadTone } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
 import { getDatabase } from '../../db/client';
-import { getWorkoutTemplates } from '../../db/repository';
+import { getWorkoutTemplates, startSessionFromTemplate } from '../../db/repository';
 import { formatRestHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
@@ -22,7 +23,15 @@ function loadColor(score: LoadScore): string {
   return colors.textMuted;
 }
 
-function TemplateCard({ template }: { template: WorkoutTemplate }) {
+function TemplateCard({
+  template,
+  starting,
+  onStart,
+}: {
+  template: WorkoutTemplate;
+  starting: boolean;
+  onStart: (template: WorkoutTemplate) => void;
+}) {
   return (
     <Card>
       <View style={styles.headerRow}>
@@ -62,11 +71,27 @@ function TemplateCard({ template }: { template: WorkoutTemplate }) {
           </View>
         ))}
       </View>
+
+      <Button
+        label={hu.screens.templates.start}
+        onPress={() => onStart(template)}
+        loading={starting}
+      />
     </Card>
   );
 }
 
-function TemplateGroup({ title, templates }: { title: string; templates: WorkoutTemplate[] }) {
+function TemplateGroup({
+  title,
+  templates,
+  startingId,
+  onStart,
+}: {
+  title: string;
+  templates: WorkoutTemplate[];
+  startingId: string | null;
+  onStart: (template: WorkoutTemplate) => void;
+}) {
   if (templates.length === 0) {
     return null;
   }
@@ -74,7 +99,12 @@ function TemplateGroup({ title, templates }: { title: string; templates: Workout
     <View style={styles.group}>
       <Text style={styles.groupTitle}>{title}</Text>
       {templates.map((template) => (
-        <TemplateCard key={template.id} template={template} />
+        <TemplateCard
+          key={template.id}
+          template={template}
+          starting={startingId === template.id}
+          onStart={onStart}
+        />
       ))}
     </View>
   );
@@ -83,6 +113,7 @@ function TemplateGroup({ title, templates }: { title: string; templates: Workout
 export default function TemplatesScreen() {
   const [templates, setTemplates] = useState<WorkoutTemplate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startingId, setStartingId] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -105,6 +136,19 @@ export default function TemplatesScreen() {
       };
     }, []),
   );
+
+  const handleStart = async (template: WorkoutTemplate): Promise<void> => {
+    setStartingId(template.id);
+    try {
+      const db = await getDatabase();
+      const sessionId = await startSessionFromTemplate(db, template);
+      router.push(`/workout/${sessionId}`);
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setStartingId(null);
+    }
+  };
 
   if (templates === null) {
     return (
@@ -129,8 +173,18 @@ export default function TemplatesScreen() {
         </Card>
       ) : (
         <>
-          <TemplateGroup title={hu.screens.templates.strengthGroup} templates={strength} />
-          <TemplateGroup title={hu.screens.templates.runningGroup} templates={running} />
+          <TemplateGroup
+            title={hu.screens.templates.strengthGroup}
+            templates={strength}
+            startingId={startingId}
+            onStart={handleStart}
+          />
+          <TemplateGroup
+            title={hu.screens.templates.runningGroup}
+            templates={running}
+            startingId={startingId}
+            onStart={handleStart}
+          />
         </>
       )}
     </Screen>

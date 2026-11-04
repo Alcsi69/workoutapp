@@ -1,17 +1,53 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Button } from '../../components/Button';
 import { Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
 import { getDatabase } from '../../db/client';
-import { getSessionHistory } from '../../db/repository';
+import { getSessionDetail, getSessionHistory } from '../../db/repository';
 import type { SessionHistorySummary } from '../../db/repository';
-import { formatDateTimeHu, formatDurationHu } from '../../services/format';
+import { formatDateTimeHu, formatDurationHu, formatPaceHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
+import type { WorkoutSessionLog } from '../../types/workout';
+
+/** Total tonnage (kg) over every logged set in a session. */
+function totalVolumeKg(detail: WorkoutSessionLog): number {
+  return detail.exerciseBlocks.reduce(
+    (sum, block) =>
+      sum + block.sets.reduce((blockSum, set) => blockSum + set.actualWeightKg * set.actualReps, 0),
+    0,
+  );
+}
 
 function SessionRow({ session }: { session: SessionHistorySummary }) {
+  const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<WorkoutSessionLog | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleToggle = async (): Promise<void> => {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    if (detail === null) {
+      setLoading(true);
+      try {
+        const db = await getDatabase();
+        setDetail(await getSessionDetail(db, session.id));
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const showStrength =
+    detail !== null && (detail.sessionType === 'strength' || detail.sessionType === 'hybrid');
+  const showRunning =
+    detail !== null && (detail.sessionType === 'running' || detail.sessionType === 'hybrid');
+
   return (
     <View style={styles.row}>
       <View style={styles.rowHeader}>
@@ -21,7 +57,9 @@ function SessionRow({ session }: { session: SessionHistorySummary }) {
           tone={session.sessionType === 'running' ? 'accent' : 'success'}
         />
       </View>
-      <Text style={styles.muted}>{hu.screens.history.completedLabel}: {formatDateTimeHu(session.completedAt)}</Text>
+      <Text style={styles.muted}>
+        {hu.screens.history.completedLabel}: {formatDateTimeHu(session.completedAt)}
+      </Text>
       <View style={styles.metaRow}>
         <Text style={styles.meta}>
           {session.exerciseCount} {hu.screens.history.exercisesLabel}
@@ -38,6 +76,87 @@ function SessionRow({ session }: { session: SessionHistorySummary }) {
           {session.syncStatus === 'synced' ? hu.status.synced : hu.status.localDirty}
         </Text>
       </View>
+
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => {
+          void handleToggle();
+        }}
+        style={({ pressed }) => [styles.detailsToggle, pressed ? styles.pressed : null]}
+      >
+        <Text style={styles.detailsLabel}>
+          {expanded ? hu.screens.history.hide : hu.screens.history.details}
+        </Text>
+      </Pressable>
+
+      {expanded ? (
+        <View style={styles.details}>
+          {loading ? <ActivityIndicator color={colors.accent} /> : null}
+
+          {showStrength && detail !== null
+            ? detail.exerciseBlocks.map((block) => (
+                <View key={block.id} style={styles.detailBlock}>
+                  <Text style={styles.detailBlockName}>
+                    {block.exercise.nameHu}
+                    {block.substitutedFromExerciseId !== undefined
+                      ? ` · ${hu.logger.replacedFrom}`
+                      : ''}
+                  </Text>
+                  {block.sets.length === 0 ? (
+                    <Text style={styles.muted}>{hu.screens.history.noSets}</Text>
+                  ) : (
+                    block.sets.map((set) => (
+                      <View key={set.id} style={styles.setRow}>
+                        <Text style={styles.setIndex}>{set.setNumber}.</Text>
+                        <Text style={styles.setType}>{hu.setTypes[set.setType]}</Text>
+                        <Text style={styles.setValue}>
+                          {set.actualWeightKg} {hu.common.kg} × {set.actualReps}
+                        </Text>
+                        {set.rpe !== undefined ? (
+                          <Text style={styles.setValue}>
+                            {hu.logger.rpe} {set.rpe}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ))
+                  )}
+                </View>
+              ))
+            : null}
+
+          {showStrength && detail !== null ? (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>{hu.screens.history.volume}</Text>
+              <Text style={styles.summaryValue}>
+                {Math.round(totalVolumeKg(detail))} {hu.common.kg}
+              </Text>
+            </View>
+          ) : null}
+
+          {showRunning && detail?.runningMetrics !== undefined ? (
+            <>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>{hu.logger.running.distance}</Text>
+                <Text style={styles.summaryValue}>
+                  {detail.runningMetrics.distanceKm} {hu.common.km}
+                </Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>{hu.logger.running.duration}</Text>
+                <Text style={styles.summaryValue}>
+                  {formatDurationHu(detail.runningMetrics.durationSeconds)}
+                </Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>{hu.logger.running.pace}</Text>
+                <Text style={styles.summaryValue}>
+                  {formatPaceHu(detail.runningMetrics.avgPaceSecondsPerKm)}
+                </Text>
+              </View>
+            </>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -154,6 +273,78 @@ const styles = StyleSheet.create({
   meta: {
     color: colors.textSecondary,
     fontSize: typography.sizes.xs,
+  },
+  detailsToggle: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceElevated,
+  },
+  detailsLabel: {
+    color: colors.textSecondary,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.medium,
+  },
+  pressed: {
+    opacity: 0.8,
+  },
+  details: {
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm,
+  },
+  detailBlock: {
+    gap: 2,
+  },
+  detailBlockName: {
+    color: colors.textPrimary,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.semibold,
+  },
+  setRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  setIndex: {
+    width: 24,
+    color: colors.textMuted,
+    fontSize: typography.sizes.xs,
+    fontVariant: ['tabular-nums'],
+  },
+  setType: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: typography.sizes.xs,
+  },
+  setValue: {
+    color: colors.textPrimary,
+    fontSize: typography.sizes.xs,
+    fontVariant: ['tabular-nums'],
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  summaryLabel: {
+    color: colors.textMuted,
+    fontSize: typography.sizes.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  summaryValue: {
+    color: colors.accent,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.semibold,
+    fontVariant: ['tabular-nums'],
   },
   empty: {
     alignItems: 'center',
