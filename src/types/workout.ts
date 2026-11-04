@@ -81,6 +81,32 @@ export type ExerciseCategory =
   | 'machine'
   | 'cardio_run';
 
+/** Training implement the exercise is performed with. */
+export type Equipment =
+  | 'barbell'
+  | 'dumbbell'
+  | 'machine'
+  | 'cable'
+  | 'bodyweight'
+  | 'kettlebell'
+  | 'specialty_bar'
+  | 'cardio';
+
+/** Canonical movement pattern — the axis filter + substitution logic reason about. */
+export type MovementPattern =
+  | 'squat'
+  | 'hinge'
+  | 'lunge'
+  | 'horizontal_push'
+  | 'vertical_push'
+  | 'horizontal_pull'
+  | 'vertical_pull'
+  | 'arm_isolation'
+  | 'core'
+  | 'calf'
+  | 'cardio'
+  | 'other';
+
 export type LoadScore = 1 | 2 | 3 | 4 | 5;
 
 export interface ExerciseCatalogItem {
@@ -88,10 +114,28 @@ export interface ExerciseCatalogItem {
   nameHu: string;
   nameEn: string;
   category: ExerciseCategory;
+  equipment: Equipment;
+  movementPattern: MovementPattern;
   primaryMuscles: string[];
   axialLoadScore: LoadScore;
   kneeStressScore: LoadScore;
   defaultSubstituteIds: string[];
+  /** True for exercises the user created on the fly (editable/deletable). */
+  isCustom: boolean;
+}
+
+/** Everything the picker's inline "custom exercise" form collects. */
+export interface CustomExerciseInput {
+  /** Hungarian display name (required — the primary locale). */
+  nameHu: string;
+  /** English display name; falls back to the Hungarian name when omitted. */
+  nameEn?: string;
+  equipment: Equipment;
+  movementPattern?: MovementPattern;
+  primaryMuscles?: string[];
+  category?: ExerciseCategory;
+  axialLoadScore?: LoadScore;
+  kneeStressScore?: LoadScore;
 }
 
 export interface SetLog {

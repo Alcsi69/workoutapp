@@ -5,6 +5,7 @@ import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { Pill, loadTone } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
+import { ExercisePickerModal } from '../../components/ExercisePickerModal';
 import { TemplateEditorModal } from '../../components/templates/TemplateEditorModal';
 import { getDatabase } from '../../db/client';
 import {
@@ -127,6 +128,7 @@ export default function TemplatesScreen() {
   const [error, setError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [editorVisible, setEditorVisible] = useState(false);
+  const [catalogVisible, setCatalogVisible] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -226,6 +228,11 @@ export default function TemplatesScreen() {
           variant="secondary"
           onPress={() => setEditorVisible(true)}
         />
+        <Button
+          label={hu.screens.templates.browseCatalog}
+          variant="secondary"
+          onPress={() => setCatalogVisible(true)}
+        />
         {banner !== null ? <Text style={styles.banner}>{banner}</Text> : null}
         {error !== null ? <Text style={styles.error}>{error}</Text> : null}
       </Card>
@@ -266,6 +273,15 @@ export default function TemplatesScreen() {
           void loadTemplates();
         }}
       />
+
+      <ExercisePickerModal
+        visible={catalogVisible}
+        catalog={catalog}
+        title={hu.screens.templates.catalogTitle}
+        allowCreate={false}
+        header={<Text style={styles.catalogCaption}>{hu.screens.templates.catalogCaption}</Text>}
+        onClose={() => setCatalogVisible(false)}
+      />
     </Screen>
   );
 }
@@ -276,6 +292,10 @@ const styles = StyleSheet.create({
   },
   error: {
     color: colors.danger,
+    fontSize: typography.sizes.sm,
+  },
+  catalogCaption: {
+    color: colors.textMuted,
     fontSize: typography.sizes.sm,
   },
   banner: {

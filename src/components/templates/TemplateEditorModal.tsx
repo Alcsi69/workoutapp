@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Chip } from '../Badge';
 import { Button } from '../Button';
+import { ExercisePickerModal } from '../ExercisePickerModal';
 import { NumberInput } from '../logger/NumberInput';
 import { getDatabase } from '../../db/client';
 import { createCustomTemplate } from '../../db/repository';
@@ -250,52 +251,6 @@ export function TemplateEditorModal({
   );
 }
 
-function ExercisePickerModal({
-  visible,
-  catalog,
-  onPick,
-  onClose,
-}: {
-  visible: boolean;
-  catalog: ExerciseCatalogItem[];
-  onPick: (exerciseId: string) => void;
-  onClose: () => void;
-}) {
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
-          <View style={styles.headerRow}>
-            <Text style={styles.title}>{hu.templateEditor.pickExercise}</Text>
-            <Pressable accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
-              <Text style={styles.closeLabel}>{hu.common.cancel}</Text>
-            </Pressable>
-          </View>
-          <ScrollView
-            style={styles.body}
-            contentContainerStyle={styles.bodyContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {catalog.map((item) => (
-              <Pressable
-                key={item.id}
-                accessibilityRole="button"
-                onPress={() => onPick(item.id)}
-                style={({ pressed }) => [styles.pickerRow, pressed ? styles.pressed : null]}
-              >
-                <Text style={styles.pickerName}>{item.nameHu}</Text>
-                <Text style={styles.pickerMeta}>
-                  {hu.screens.load.kneeShort} {item.kneeStressScore}/5
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
@@ -408,26 +363,5 @@ const styles = StyleSheet.create({
   error: {
     color: colors.danger,
     fontSize: typography.sizes.sm,
-  },
-  pickerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  pickerName: {
-    flex: 1,
-    color: colors.textPrimary,
-    fontSize: typography.sizes.md,
-  },
-  pickerMeta: {
-    color: colors.textMuted,
-    fontSize: typography.sizes.xs,
-  },
-  pressed: {
-    opacity: 0.85,
   },
 });

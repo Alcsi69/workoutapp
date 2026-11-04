@@ -7,18 +7,20 @@
 
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type {
+  Equipment,
   EquipmentTier,
   ExerciseCategory,
   JointArea,
   JointConstraintSeverity,
   LoadScore,
+  MovementPattern,
   SessionType,
   SetType,
   SyncStatus,
   TrainingGoal,
 } from '../types/workout';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export interface Migration {
   version: number;
@@ -166,6 +168,22 @@ export const migrations: Migration[] = [
       `ALTER TABLE session_exercise_blocks ADD COLUMN target_reps TEXT;`,
     ],
   },
+  {
+    version: 4,
+    statements: [
+      // --- Exercise catalog: equipment, movement pattern, user-created flag --
+      // The catalog grows into a StrengthLevel-scale database, so each exercise
+      // now records its implement and canonical movement pattern (both used by
+      // the picker's filters) and whether the user created it. `equipment` and
+      // `movement_pattern` are nullable only to keep existing rows valid during
+      // the migration; the seeder backfills every seeded row immediately after.
+      `ALTER TABLE exercise_catalog ADD COLUMN equipment TEXT;`,
+      `ALTER TABLE exercise_catalog ADD COLUMN movement_pattern TEXT;`,
+      `ALTER TABLE exercise_catalog ADD COLUMN is_custom INTEGER NOT NULL DEFAULT 0;`,
+      `CREATE INDEX IF NOT EXISTS idx_catalog_name_hu ON exercise_catalog(name_hu);`,
+      `CREATE INDEX IF NOT EXISTS idx_catalog_name_en ON exercise_catalog(name_en);`,
+    ],
+  },
 ];
 
 /**
@@ -202,10 +220,13 @@ export interface ExerciseCatalogRow {
   name_hu: string;
   name_en: string;
   category: ExerciseCategory;
+  equipment: Equipment;
+  movement_pattern: MovementPattern;
   primary_muscles: string; // JSON string[]
   axial_load_score: LoadScore;
   knee_stress_score: LoadScore;
   default_substitute_ids: string; // JSON string[]
+  is_custom: number; // SQLite 0/1 — surfaced to the domain as a boolean
 }
 
 export interface SessionLogRow {
@@ -237,10 +258,13 @@ export interface SessionExerciseJoinRow extends SessionExerciseBlockRow {
   name_hu: string;
   name_en: string;
   category: ExerciseCategory;
+  equipment: Equipment;
+  movement_pattern: MovementPattern;
   primary_muscles: string; // JSON string[]
   axial_load_score: LoadScore;
   knee_stress_score: LoadScore;
   default_substitute_ids: string; // JSON string[]
+  is_custom: number; // SQLite 0/1
 }
 
 export interface SetLogRow {
@@ -319,10 +343,13 @@ export interface TemplateExerciseJoinRow extends TemplateExerciseBlockRow {
   name_hu: string;
   name_en: string;
   category: ExerciseCategory;
+  equipment: Equipment;
+  movement_pattern: MovementPattern;
   primary_muscles: string; // JSON string[]
   axial_load_score: LoadScore;
   knee_stress_score: LoadScore;
   default_substitute_ids: string; // JSON string[]
+  is_custom: number; // SQLite 0/1
 }
 
 // Keep the domain unions referenced so the row shapes stay aligned with the API surface.

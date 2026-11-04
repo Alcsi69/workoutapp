@@ -11,7 +11,14 @@
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { migrate, SCHEMA_VERSION } = require('../.verify-build/db/schema.js');
-const { seedExerciseCatalog, CORE_EXERCISE_CATALOG } = require('../.verify-build/db/seed.js');
+const { seedExerciseCatalog } = require('../.verify-build/db/seed.js');
+const { EXERCISE_CATALOG } = require('../.verify-build/db/catalogData.js');
+const {
+  normalizeSearchText,
+  exerciseMatchesQuery,
+  filterExercises,
+  deriveMuscleGroup,
+} = require('../.verify-build/services/exerciseSearch.js');
 const repository = require('../.verify-build/db/repository.js');
 const {
   pickRecommendedSession,
@@ -109,8 +116,8 @@ async function main() {
 
   await check('exercise catalog seeds the full catalog', async () => {
     const inserted = await seedExerciseCatalog(db);
-    assert.equal(inserted, CORE_EXERCISE_CATALOG.length);
-    assert.ok(inserted >= 28, `expected 28+ exercises, inserted ${inserted}`);
+    assert.equal(inserted, EXERCISE_CATALOG.length);
+    assert.ok(inserted >= 130, `expected 130+ exercises, inserted ${inserted}`);
   });
 
   await check('re-seeding an unchanged catalog is a no-op', async () => {
@@ -225,19 +232,124 @@ async function main() {
 
   console.log('\ncatalog + templates reads');
   await check('getExerciseCatalog filters by category', async () => {
+    const expectedCardio = EXERCISE_CATALOG.filter((item) => item.category === 'cardio_run').length;
     const cardio = await repository.getExerciseCatalog(db, 'cardio_run');
-    assert.equal(cardio.length, 6);
+    assert.equal(cardio.length, expectedCardio);
     assert.ok(cardio.every((item) => item.category === 'cardio_run'));
   });
 
   await check('catalog JSON columns parse cleanly', async () => {
     const catalog = await repository.getExerciseCatalog(db);
-    assert.equal(catalog.length, CORE_EXERCISE_CATALOG.length);
+    assert.equal(catalog.length, EXERCISE_CATALOG.length);
     const frontSquat = catalog.find((item) => item.id === 'front_squat');
     assert.deepEqual(frontSquat.primaryMuscles, ['quadriceps', 'glutes', 'core']);
     assert.deepEqual(frontSquat.defaultSubstituteIds, ['belt_squat']);
     // Lowered to 3 so the front squat survives avoid_heavy_axial_load (knee sleeves).
     assert.equal(frontSquat.kneeStressScore, 3);
+    // Migration v4 metadata is hydrated for every row.
+    assert.equal(frontSquat.equipment, 'barbell');
+    assert.equal(frontSquat.movementPattern, 'squat');
+    assert.equal(frontSquat.isCustom, false);
+  });
+
+  console.log('\ncatalog expansion + search (phase 5)');
+
+  await check('catalog has >= 130 unique exercises with valid constraints', () => {
+    assert.ok(EXERCISE_CATALOG.length >= 130, `got ${EXERCISE_CATALOG.length}`);
+    const ids = new Set();
+    const equipments = new Set([
+      'barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'kettlebell', 'specialty_bar', 'cardio',
+    ]);
+    const patterns = new Set([
+      'squat', 'hinge', 'lunge', 'horizontal_push', 'vertical_push', 'horizontal_pull',
+      'vertical_pull', 'arm_isolation', 'core', 'calf', 'cardio', 'other',
+    ]);
+    for (const item of EXERCISE_CATALOG) {
+      assert.ok(!ids.has(item.id), `duplicate id ${item.id}`);
+      ids.add(item.id);
+      assert.ok(equipments.has(item.equipment), `bad equipment on ${item.id}: ${item.equipment}`);
+      assert.ok(patterns.has(item.movementPattern), `bad pattern on ${item.id}`);
+      assert.ok(item.axialLoadScore >= 1 && item.axialLoadScore <= 5, `axial out of range on ${item.id}`);
+      assert.ok(item.kneeStressScore >= 1 && item.kneeStressScore <= 5, `knee out of range on ${item.id}`);
+      assert.ok(item.nameHu.length > 0 && item.nameEn.length > 0, `missing name on ${item.id}`);
+    }
+    // The new equipment columns are backed by indexes (schedule name lookups).
+    const indexes = raw
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'exercise_catalog'")
+      .all()
+      .map((row) => row.name);
+    assert.ok(indexes.includes('idx_catalog_name_hu'));
+    assert.ok(indexes.includes('idx_catalog_name_en'));
+    assert.equal(
+      raw.prepare('SELECT COUNT(*) AS count FROM exercise_catalog WHERE is_custom = 0').get().count,
+      EXERCISE_CATALOG.length,
+    );
+  });
+
+  await check('accent-insensitive normalization folds Hungarian diacritics', () => {
+    assert.equal(normalizeSearchText('Elölguggolás'), 'elolguggolas');
+    assert.equal(normalizeSearchText('Csípőemelés'), 'csipoemeles');
+    assert.equal(normalizeSearchText('  HÚZÓDZKODÁS '), 'huzodzkodas');
+  });
+
+  await check('search matches Hungarian without accents and English by name', () => {
+    const byHu = filterExercises(EXERCISE_CATALOG, { query: 'guggolas' });
+    assert.ok(byHu.some((item) => item.id === 'front_squat'), 'unaccented HU query finds front_squat');
+    const byEn = filterExercises(EXERCISE_CATALOG, { query: 'squat' });
+    assert.ok(byEn.some((item) => item.id === 'front_squat'));
+    assert.ok(byEn.some((item) => item.id === 'back_squat_high_bar'));
+    assert.ok(byEn.every((item) => exerciseMatchesQuery(item, 'squat')));
+  });
+
+  await check('muscle-group + equipment filters narrow the catalog', () => {
+    assert.equal(deriveMuscleGroup({ ...EXERCISE_CATALOG[0], category: 'compound_lower', primaryMuscles: ['quadriceps'] }), 'legs_front');
+    const cardio = filterExercises(EXERCISE_CATALOG, { muscleGroup: 'cardio' });
+    assert.ok(cardio.every((item) => deriveMuscleGroup(item) === 'cardio'));
+    assert.ok(cardio.some((item) => item.id === 'run_easy_5k'));
+    const barbell = filterExercises(EXERCISE_CATALOG, { equipment: 'barbell' });
+    assert.ok(barbell.every((item) => item.equipment === 'barbell' || item.equipment === 'specialty_bar'));
+    assert.ok(barbell.some((item) => item.id === 'bench_press'));
+    const combined = filterExercises(EXERCISE_CATALOG, { query: 'nyomás', muscleGroup: 'chest' });
+    assert.ok(combined.every((item) => deriveMuscleGroup(item) === 'chest'));
+  });
+
+  await check('createCustomExercise persists a user exercise that is searchable', async () => {
+    const before = await repository.getExerciseCatalog(db);
+    const created = await repository.createCustomExercise(db, {
+      nameHu: 'Farmerséta',
+      nameEn: 'Farmer Carry',
+      equipment: 'dumbbell',
+      primaryMuscles: ['forearms', 'core'],
+      category: 'isolation',
+    });
+    assert.ok(created.id.startsWith('cust_'));
+    assert.equal(created.isCustom, true);
+    assert.equal(created.equipment, 'dumbbell');
+    assert.equal(created.nameEn, 'Farmer Carry');
+
+    const after = await repository.getExerciseCatalog(db);
+    assert.equal(after.length, before.length + 1);
+    const reloaded = after.find((item) => item.id === created.id);
+    assert.ok(reloaded !== undefined);
+    assert.equal(reloaded.isCustom, true);
+    // Accent-insensitive search finds it under either name.
+    assert.deepEqual(
+      filterExercises(after, { query: 'farmerseta' }).map((item) => item.id),
+      [created.id],
+    );
+    assert.ok(filterExercises(after, { query: 'carry' }).some((item) => item.id === created.id));
+
+    // A blank name is rejected and leaves the catalog unchanged.
+    await assert.rejects(
+      () => repository.createCustomExercise(db, { nameHu: '   ', equipment: 'barbell' }),
+      /nem lehet üres/,
+    );
+    assert.equal((await repository.getExerciseCatalog(db)).length, after.length);
+
+    // The seeder ignores user rows: re-seeding is still a no-op for shipped rows.
+    const changed = await seedExerciseCatalog(db);
+    assert.equal(changed, 0);
+    assert.ok((await repository.getExerciseById(db, created.id)) !== null);
   });
 
   const templates = await repository.getWorkoutTemplates(db);
@@ -802,7 +914,8 @@ async function main() {
     assert.deepEqual(request.profile.constraints.preferredSubstitutions, {
       hack_squat: 'belt_squat',
     });
-    assert.equal(request.catalog.length, CORE_EXERCISE_CATALOG.length);
+    // The full shipped catalog plus any user-created exercises (>= the seed).
+    assert.ok(request.catalog.length >= EXERCISE_CATALOG.length);
     assert.ok(request.catalog.some((item) => item.id === 'belt_squat'));
   });
 

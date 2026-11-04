@@ -8,10 +8,12 @@
 
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type {
+  CustomExerciseInput,
   CustomTemplateInput,
   ExerciseCatalogItem,
   ExerciseCategory,
   JointConstraint,
+  MovementPattern,
   OnboardingPayload,
   RunningMetrics,
   SessionExerciseBlock,
@@ -239,8 +241,11 @@ export async function getJointConstraints(
 // --- Exercise catalog -------------------------------------------------------
 
 const SELECT_CATALOG_SQL = `
-  SELECT id, name_hu, name_en, category, primary_muscles,
-         axial_load_score, knee_stress_score, default_substitute_ids
+  SELECT id, name_hu, name_en, category,
+         COALESCE(equipment, 'barbell') AS equipment,
+         COALESCE(movement_pattern, 'isolation') AS movement_pattern,
+         primary_muscles, axial_load_score, knee_stress_score, default_substitute_ids,
+         is_custom
   FROM exercise_catalog
 `;
 
@@ -250,10 +255,13 @@ function toCatalogItem(row: ExerciseCatalogRow, id: string = row.id): ExerciseCa
     nameHu: row.name_hu,
     nameEn: row.name_en,
     category: row.category,
+    equipment: row.equipment,
+    movementPattern: row.movement_pattern,
     primaryMuscles: parseStringArray(row.primary_muscles),
     axialLoadScore: row.axial_load_score,
     kneeStressScore: row.knee_stress_score,
     defaultSubstituteIds: parseStringArray(row.default_substitute_ids),
+    isCustom: row.is_custom === 1,
   };
 }
 
@@ -285,6 +293,68 @@ export async function getExerciseById(
   return row === null ? null : toCatalogItem(row);
 }
 
+const INSERT_CUSTOM_EXERCISE_SQL = `
+  INSERT INTO exercise_catalog
+    (id, name_hu, name_en, category, equipment, movement_pattern, primary_muscles,
+     axial_load_score, knee_stress_score, default_substitute_ids, is_custom)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 1);
+`;
+
+/** Sensible defaults the "custom exercise" form does not need to collect. */
+const CUSTOM_EXERCISE_DEFAULT_CATEGORY: ExerciseCategory = 'isolation';
+const CUSTOM_EXERCISE_DEFAULT_PATTERN: MovementPattern = 'other';
+const CUSTOM_EXERCISE_DEFAULT_MUSCLES: readonly string[] = ['custom'];
+const CUSTOM_EXERCISE_DEFAULT_LOAD = 1;
+
+/**
+ * Creates a user-defined catalog entry (the picker's inline "+ Saját gyakorlat
+ * hozzáadása" flow). Hungarian name is required; the English name falls back to
+ * it so English search still matches. Generated ids carry a `cust_` prefix so
+ * they never collide with seeded rows and survive re-seeding.
+ */
+export async function createCustomExercise(
+  db: SQLiteDatabase,
+  input: CustomExerciseInput,
+): Promise<ExerciseCatalogItem> {
+  const nameHu = input.nameHu.trim();
+  if (nameHu.length === 0) {
+    throw new Error('A gyakorlat neve nem lehet üres.');
+  }
+  const nameEn = (input.nameEn ?? nameHu).trim() || nameHu;
+
+  const item: ExerciseCatalogItem = {
+    id: createLocalId('cust'),
+    nameHu,
+    nameEn,
+    category: input.category ?? CUSTOM_EXERCISE_DEFAULT_CATEGORY,
+    equipment: input.equipment,
+    movementPattern: input.movementPattern ?? CUSTOM_EXERCISE_DEFAULT_PATTERN,
+    primaryMuscles:
+      input.primaryMuscles !== undefined && input.primaryMuscles.length > 0
+        ? input.primaryMuscles
+        : [...CUSTOM_EXERCISE_DEFAULT_MUSCLES],
+    axialLoadScore: input.axialLoadScore ?? CUSTOM_EXERCISE_DEFAULT_LOAD,
+    kneeStressScore: input.kneeStressScore ?? CUSTOM_EXERCISE_DEFAULT_LOAD,
+    defaultSubstituteIds: [],
+    isCustom: true,
+  };
+
+  await db.runAsync(
+    INSERT_CUSTOM_EXERCISE_SQL,
+    item.id,
+    item.nameHu,
+    item.nameEn,
+    item.category,
+    item.equipment,
+    item.movementPattern,
+    JSON.stringify(item.primaryMuscles),
+    item.axialLoadScore,
+    item.kneeStressScore,
+  );
+
+  return item;
+}
+
 // --- Program templates ------------------------------------------------------
 
 const SELECT_TEMPLATES_SQL = `
@@ -301,8 +371,11 @@ const SELECT_TEMPLATE_BLOCKS_SQL = `
          b.substituted_from_exercise_id, b.rest_seconds, b.notes,
          b.target_sets, b.target_reps,
          c.id AS catalog_id,
-         c.name_hu, c.name_en, c.category, c.primary_muscles,
-         c.axial_load_score, c.knee_stress_score, c.default_substitute_ids
+         c.name_hu, c.name_en, c.category,
+         COALESCE(c.equipment, 'barbell') AS equipment,
+         COALESCE(c.movement_pattern, 'isolation') AS movement_pattern,
+         c.primary_muscles,
+         c.axial_load_score, c.knee_stress_score, c.default_substitute_ids, c.is_custom
   FROM template_exercise_blocks b
   JOIN exercise_catalog c ON c.id = b.exercise_id
   ORDER BY b.template_id, b.order_index;
@@ -1033,8 +1106,11 @@ const SELECT_SESSION_BLOCKS_SQL = `
          b.substituted_from_exercise_id, b.rest_seconds, b.notes,
          b.target_sets, b.target_reps,
          c.id AS catalog_id,
-         c.name_hu, c.name_en, c.category, c.primary_muscles,
-         c.axial_load_score, c.knee_stress_score, c.default_substitute_ids
+         c.name_hu, c.name_en, c.category,
+         COALESCE(c.equipment, 'barbell') AS equipment,
+         COALESCE(c.movement_pattern, 'isolation') AS movement_pattern,
+         c.primary_muscles,
+         c.axial_load_score, c.knee_stress_score, c.default_substitute_ids, c.is_custom
   FROM session_exercise_blocks b
   JOIN exercise_catalog c ON c.id = b.exercise_id
   WHERE b.session_id = ?
