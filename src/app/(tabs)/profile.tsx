@@ -5,6 +5,7 @@ import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
+import { SyncCard } from '../../components/SyncCard';
 import { getDatabase } from '../../db/client';
 import { getExerciseCatalog, getUserProfile } from '../../db/repository';
 import { formatDateHu } from '../../services/format';
@@ -183,6 +184,8 @@ export default function ProfileScreen() {
           ))
         )}
       </Card>
+
+      <SyncCard />
 
       <Text style={styles.updated}>
         {hu.screens.profile.updatedAt}: {formatDateHu(profile.updatedAt)}

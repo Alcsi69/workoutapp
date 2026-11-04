@@ -8,6 +8,7 @@
 
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type {
+  CustomTemplateInput,
   ExerciseCatalogItem,
   ExerciseCategory,
   JointConstraint,
@@ -552,6 +553,297 @@ export async function seedDefaultTemplates(db: SQLiteDatabase): Promise<number> 
   });
 
   return inserted;
+}
+
+// --- Template mutation (Phase 4) --------------------------------------------
+//
+// Program generation and the custom-template editor both edit template rows.
+// These helpers keep the SQL here so screens/services only speak domain objects.
+
+const UPSERT_TEMPLATE_META_SQL = `
+  INSERT INTO workout_templates (id, title, session_type, goal, created_at)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    title = excluded.title,
+    session_type = excluded.session_type,
+    goal = excluded.goal;
+`;
+
+const UPDATE_TEMPLATE_BLOCK_EXERCISE_SQL = `
+  UPDATE template_exercise_blocks
+     SET exercise_id = ?,
+         substituted_from_exercise_id = COALESCE(substituted_from_exercise_id, exercise_id)
+   WHERE id = ?;
+`;
+
+const DELETE_TEMPLATE_BLOCK_SQL = `
+  DELETE FROM template_exercise_blocks WHERE template_id = ?;
+`;
+
+const DEFAULT_CUSTOM_TARGET_SETS = 3;
+const DEFAULT_CUSTOM_TARGET_REPS = '8-10';
+const DEFAULT_CUSTOM_REST_SECONDS = 90;
+
+/**
+ * Persists a hand-built template from the Sablonok editor. Validates the title,
+ * that at least one block is present, and that every exercise exists in the
+ * catalog (the read join would otherwise drop unknown blocks silently).
+ */
+export async function createCustomTemplate(
+  db: SQLiteDatabase,
+  input: CustomTemplateInput,
+): Promise<WorkoutTemplate> {
+  const title = input.title.trim();
+  if (title.length === 0) {
+    throw new Error('A sablon neve nem lehet üres.');
+  }
+  if (input.blocks.length === 0) {
+    throw new Error('A sablonhoz legalább egy gyakorlat szükséges.');
+  }
+
+  const catalog = await getExerciseCatalog(db);
+  const known = new Set(catalog.map((item) => item.id));
+  for (const block of input.blocks) {
+    if (!known.has(block.exerciseId)) {
+      throw new Error(`Ismeretlen gyakorlat: "${block.exerciseId}".`);
+    }
+  }
+
+  const id = createLocalId('tpl_user');
+  const createdAt = new Date().toISOString();
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      UPSERT_TEMPLATE_META_SQL,
+      id,
+      title,
+      input.sessionType,
+      input.goal ?? null,
+      createdAt,
+    );
+    for (let index = 0; index < input.blocks.length; index += 1) {
+      const block = input.blocks[index];
+      await db.runAsync(
+        INSERT_TEMPLATE_BLOCK_SQL,
+        `${id}:${index}`,
+        id,
+        index,
+        block.exerciseId,
+        null,
+        block.restSeconds ?? DEFAULT_CUSTOM_REST_SECONDS,
+        block.notes ?? null,
+        block.targetSets ?? DEFAULT_CUSTOM_TARGET_SETS,
+        block.targetReps ?? DEFAULT_CUSTOM_TARGET_REPS,
+      );
+    }
+  });
+
+  const created = await getWorkoutTemplateById(db, id);
+  if (created === null) {
+    throw new Error('A sablon létrehozása sikertelen.');
+  }
+  return created;
+}
+
+/** Deletes a template and (via FK cascade) its blocks. Returns true when removed. */
+export async function deleteTemplate(db: SQLiteDatabase, templateId: string): Promise<boolean> {
+  const result = await db.runAsync('DELETE FROM workout_templates WHERE id = ?;', templateId);
+  return result.changes > 0;
+}
+
+/**
+ * Swaps a template block's exercise, preserving the original prescription in
+ * `substituted_from_exercise_id` (kept across repeated swaps, like the session
+ * variant so the plan shows plan-vs-prescribed).
+ */
+export async function substituteTemplateBlockExercise(
+  db: SQLiteDatabase,
+  blockId: string,
+  newExerciseId: string,
+): Promise<void> {
+  const target = await getExerciseById(db, newExerciseId);
+  if (target === null) {
+    throw new Error(`Ismeretlen gyakorlat: "${newExerciseId}".`);
+  }
+  await db.runAsync(UPDATE_TEMPLATE_BLOCK_EXERCISE_SQL, newExerciseId, blockId);
+}
+
+/**
+ * Moves the block holding `exerciseId` to the front of the template (order_index
+ * 0), swapping positions with the current first block. No-op when the exercise
+ * is already first or absent. Returns true when a swap happened.
+ */
+export async function prioritizeTemplateExercise(
+  db: SQLiteDatabase,
+  templateId: string,
+  exerciseId: string,
+): Promise<boolean> {
+  const rows = await db.getAllAsync<{ id: string; order_index: number; exercise_id: string }>(
+    `SELECT id, order_index, exercise_id
+     FROM template_exercise_blocks
+     WHERE template_id = ?
+     ORDER BY order_index;`,
+    templateId,
+  );
+  const targetIndex = rows.findIndex((row) => row.exercise_id === exerciseId);
+  if (targetIndex <= 0) {
+    return false;
+  }
+
+  const first = rows[0];
+  const target = rows[targetIndex];
+  await db.withTransactionAsync(async () => {
+    // Park the target at a temporary index so a swap never collides transiently.
+    await db.runAsync(
+      'UPDATE template_exercise_blocks SET order_index = -1 WHERE id = ?;',
+      target.id,
+    );
+    await db.runAsync(
+      'UPDATE template_exercise_blocks SET order_index = ? WHERE id = ?;',
+      target.order_index,
+      first.id,
+    );
+    await db.runAsync(
+      'UPDATE template_exercise_blocks SET order_index = ? WHERE id = ?;',
+      first.order_index,
+      target.id,
+    );
+  });
+  return true;
+}
+
+export interface RunningTemplateInput {
+  templateId: string;
+  title: string;
+  exerciseId: string;
+  targetReps: string;
+  restSeconds: number;
+  notes?: string;
+}
+
+const UPSERT_RUNNING_TEMPLATE_SQL = `
+  INSERT INTO workout_templates (id, title, session_type, goal, created_at)
+  VALUES (?, ?, 'running', 'hybrid_strength_running', ?)
+  ON CONFLICT(id) DO UPDATE SET
+    title = excluded.title,
+    session_type = excluded.session_type,
+    goal = excluded.goal;
+`;
+
+/**
+ * Upserts a single-block running template scaled to the user's target distance.
+ * Existing blocks for the template are replaced so re-scaling is idempotent.
+ */
+export async function upsertRunningTemplate(
+  db: SQLiteDatabase,
+  input: RunningTemplateInput,
+): Promise<void> {
+  const createdAt = new Date().toISOString();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(UPSERT_RUNNING_TEMPLATE_SQL, input.templateId, input.title, createdAt);
+    await db.runAsync(DELETE_TEMPLATE_BLOCK_SQL, input.templateId);
+    await db.runAsync(
+      INSERT_TEMPLATE_BLOCK_SQL,
+      `${input.templateId}:0`,
+      input.templateId,
+      0,
+      input.exerciseId,
+      null,
+      input.restSeconds,
+      input.notes ?? null,
+      1,
+      input.targetReps,
+    );
+  });
+}
+
+// --- Generated program templates (Phase 4) ---------------------------------
+//
+// The routine generator owns a fixed set of template ids. It builds each day in
+// memory, then writes it here: metadata upserted, blocks replaced atomically, so
+// re-generating never leaves duplicate or orphaned blocks.
+
+export interface TemplateProgramBlockSeed {
+  exerciseId: string;
+  targetSets: number;
+  targetReps: string;
+  restSeconds: number;
+  notes?: string;
+}
+
+export interface TemplateProgramSeed {
+  id: string;
+  title: string;
+  sessionType: SessionType;
+  goal?: TrainingGoal;
+  blocks: TemplateProgramBlockSeed[];
+}
+
+/**
+ * Writes a complete generated template: upserts its metadata and replaces every
+ * block. Deterministic block ids (`<templateId>:<index>`) keep re-generation a
+ * true no-op for the row set.
+ */
+export async function replaceTemplateProgram(
+  db: SQLiteDatabase,
+  seed: TemplateProgramSeed,
+): Promise<void> {
+  const createdAt = new Date().toISOString();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      UPSERT_TEMPLATE_META_SQL,
+      seed.id,
+      seed.title,
+      seed.sessionType,
+      seed.goal ?? null,
+      createdAt,
+    );
+    await db.runAsync(DELETE_TEMPLATE_BLOCK_SQL, seed.id);
+    for (let index = 0; index < seed.blocks.length; index += 1) {
+      const block = seed.blocks[index];
+      await db.runAsync(
+        INSERT_TEMPLATE_BLOCK_SQL,
+        `${seed.id}:${index}`,
+        seed.id,
+        index,
+        block.exerciseId,
+        null,
+        block.restSeconds,
+        block.notes ?? null,
+        block.targetSets,
+        block.targetReps,
+      );
+    }
+  });
+}
+
+/** Deletes several templates at once (FK cascade removes their blocks). */
+export async function deleteTemplatesByIds(
+  db: SQLiteDatabase,
+  templateIds: readonly string[],
+): Promise<number> {
+  if (templateIds.length === 0) {
+    return 0;
+  }
+  const placeholders = templateIds.map(() => '?').join(', ');
+  let changes = 0;
+  await db.withTransactionAsync(async () => {
+    const result = await db.runAsync(
+      `DELETE FROM workout_templates WHERE id IN (${placeholders});`,
+      ...templateIds,
+    );
+    changes = result.changes;
+  });
+  return changes;
+}
+
+/** Overwrites a template block's coaching note (null clears it). */
+export async function setTemplateBlockNotes(
+  db: SQLiteDatabase,
+  blockId: string,
+  notes: string | null,
+): Promise<void> {
+  await db.runAsync('UPDATE template_exercise_blocks SET notes = ? WHERE id = ?;', notes, blockId);
 }
 
 // --- Session logs -----------------------------------------------------------
@@ -1157,4 +1449,63 @@ export async function discardSession(db: SQLiteDatabase, sessionId: string): Pro
     sessionId,
   );
   return result.changes > 0;
+}
+
+// --- Sync queue (Phase 4) ---------------------------------------------------
+//
+// The offline-first contract: every local mutation flags its session
+// `local_dirty`. The sync service reads exactly those rows, uploads them, and
+// flips them to `synced` on success.
+
+/** Ids of every session whose logs changed locally and still need uploading. */
+export async function getDirtySessionIds(db: SQLiteDatabase): Promise<string[]> {
+  const rows = await db.getAllAsync<{ id: string }>(
+    `SELECT id FROM session_logs WHERE sync_status = 'local_dirty' ORDER BY started_at;`,
+  );
+  return rows.map((row) => row.id);
+}
+
+/** Badge count for the Szinkronizálás card. */
+export async function countDirtySessions(db: SQLiteDatabase): Promise<number> {
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM session_logs WHERE sync_status = 'local_dirty';`,
+  );
+  return row?.count ?? 0;
+}
+
+/**
+ * The full nested payload for every locally dirty session (completed or still
+ * in progress): the session, its ordered blocks hydrated with catalog metadata,
+ * each block's sets, and running metrics — i.e. `WorkoutSessionLog[]`.
+ */
+export async function getDirtySessionsPayload(db: SQLiteDatabase): Promise<WorkoutSessionLog[]> {
+  const ids = await getDirtySessionIds(db);
+  const sessions: WorkoutSessionLog[] = [];
+  for (const id of ids) {
+    const detail = await getSessionDetail(db, id);
+    if (detail !== null) {
+      sessions.push(detail);
+    }
+  }
+  return sessions;
+}
+
+/** Flips the given sessions to `synced` atomically. Returns the rows changed. */
+export async function markSessionsSynced(
+  db: SQLiteDatabase,
+  sessionIds: string[],
+): Promise<number> {
+  if (sessionIds.length === 0) {
+    return 0;
+  }
+  const placeholders = sessionIds.map(() => '?').join(', ');
+  let changes = 0;
+  await db.withTransactionAsync(async () => {
+    const result = await db.runAsync(
+      `UPDATE session_logs SET sync_status = 'synced' WHERE id IN (${placeholders});`,
+      ...sessionIds,
+    );
+    changes = result.changes;
+  });
+  return changes;
 }

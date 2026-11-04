@@ -6,7 +6,8 @@ import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrate } from './schema';
 import { seedExerciseCatalog } from './seed';
-import { seedDefaultTemplates } from './repository';
+import { getUserProfile, seedDefaultTemplates } from './repository';
+import { generateProgramFromProfile } from '../services/routineGenerator';
 
 export const DATABASE_NAME = 'workout.db';
 
@@ -14,9 +15,13 @@ let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 /**
  * Returns the shared database instance, initializing it on first call:
- * open -> migrate -> seed catalog -> seed templates. The promise is cached, so
- * initialization runs once per app process and concurrent callers await the
- * same work.
+ * open -> migrate -> seed catalog -> (generate program | seed fallback
+ * templates). The promise is cached, so initialization runs once per app process
+ * and concurrent callers await the same work.
+ *
+ * With a saved profile the generated program is rebuilt so existing databases
+ * converge on the current split; without one the minimal fallback templates are
+ * seeded for the pre-onboarding state.
  */
 export function getDatabase(): Promise<SQLiteDatabase> {
   if (databasePromise === null) {
@@ -24,7 +29,12 @@ export function getDatabase(): Promise<SQLiteDatabase> {
       const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
       await migrate(db);
       await seedExerciseCatalog(db);
-      await seedDefaultTemplates(db);
+      const profile = await getUserProfile(db);
+      if (profile === null) {
+        await seedDefaultTemplates(db);
+      } else {
+        await generateProgramFromProfile(db);
+      }
       return db;
     })();
   }

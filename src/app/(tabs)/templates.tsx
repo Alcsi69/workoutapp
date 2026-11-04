@@ -5,12 +5,23 @@ import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { Pill, loadTone } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
+import { TemplateEditorModal } from '../../components/templates/TemplateEditorModal';
 import { getDatabase } from '../../db/client';
-import { getWorkoutTemplates, startSessionFromTemplate } from '../../db/repository';
+import {
+  getExerciseCatalog,
+  getWorkoutTemplates,
+  startSessionFromTemplate,
+} from '../../db/repository';
+import { generateProgramFromProfile } from '../../services/routineGenerator';
 import { formatRestHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
-import type { LoadScore, WorkoutTemplate } from '../../types/workout';
+import type { ExerciseCatalogItem, LoadScore, WorkoutTemplate } from '../../types/workout';
+
+/** Locally created templates carry the `tpl_user` id prefix. */
+function isCustomTemplate(template: WorkoutTemplate): boolean {
+  return template.id.startsWith('tpl_user');
+}
 
 function loadColor(score: LoadScore): string {
   const tone = loadTone(score);
@@ -112,17 +123,30 @@ function TemplateGroup({
 
 export default function TemplatesScreen() {
   const [templates, setTemplates] = useState<WorkoutTemplate[] | null>(null);
+  const [catalog, setCatalog] = useState<ExerciseCatalogItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
+  const [editorVisible, setEditorVisible] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [banner, setBanner] = useState<string | null>(null);
+
+  const loadTemplates = useCallback(async (): Promise<void> => {
+    const db = await getDatabase();
+    setTemplates(await getWorkoutTemplates(db));
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       getDatabase()
-        .then((db) => getWorkoutTemplates(db))
-        .then((next) => {
+        .then(async (db) => {
+          const [nextTemplates, nextCatalog] = await Promise.all([
+            getWorkoutTemplates(db),
+            getExerciseCatalog(db),
+          ]);
           if (!cancelled) {
-            setTemplates(next);
+            setTemplates(nextTemplates);
+            setCatalog(nextCatalog);
             setError(null);
           }
         })
@@ -150,6 +174,23 @@ export default function TemplatesScreen() {
     }
   };
 
+  const handleRegenerate = async (): Promise<void> => {
+    setRegenerating(true);
+    setBanner(null);
+    try {
+      const db = await getDatabase();
+      const result = await generateProgramFromProfile(db);
+      await loadTemplates();
+      setBanner(
+        result.generated ? hu.screens.templates.regenerateDone : hu.screens.templates.regenerateNoProfile,
+      );
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   if (templates === null) {
     return (
       <Screen title={hu.tabs.templates} subtitle={hu.screens.templates.subtitle}>
@@ -162,17 +203,45 @@ export default function TemplatesScreen() {
     );
   }
 
-  const strength = templates.filter((template) => template.sessionType === 'strength');
-  const running = templates.filter((template) => template.sessionType !== 'strength');
+  const custom = templates.filter(isCustomTemplate);
+  const strength = templates.filter(
+    (template) => !isCustomTemplate(template) && template.sessionType === 'strength',
+  );
+  const running = templates.filter(
+    (template) => !isCustomTemplate(template) && template.sessionType !== 'strength',
+  );
 
   return (
     <Screen title={hu.tabs.templates} subtitle={hu.screens.templates.subtitle}>
+      <Card title={hu.screens.templates.regenerate} caption={hu.screens.templates.regenerateHint}>
+        <Button
+          label={hu.screens.templates.regenerate}
+          onPress={() => {
+            void handleRegenerate();
+          }}
+          loading={regenerating}
+        />
+        <Button
+          label={hu.screens.templates.newTemplate}
+          variant="secondary"
+          onPress={() => setEditorVisible(true)}
+        />
+        {banner !== null ? <Text style={styles.banner}>{banner}</Text> : null}
+        {error !== null ? <Text style={styles.error}>{error}</Text> : null}
+      </Card>
+
       {templates.length === 0 ? (
         <Card>
           <Text style={styles.meta}>{hu.screens.templates.empty}</Text>
         </Card>
       ) : (
         <>
+          <TemplateGroup
+            title={hu.screens.templates.customGroup}
+            templates={custom}
+            startingId={startingId}
+            onStart={handleStart}
+          />
           <TemplateGroup
             title={hu.screens.templates.strengthGroup}
             templates={strength}
@@ -187,6 +256,16 @@ export default function TemplatesScreen() {
           />
         </>
       )}
+
+      <TemplateEditorModal
+        visible={editorVisible}
+        catalog={catalog}
+        onClose={() => setEditorVisible(false)}
+        onCreated={() => {
+          setEditorVisible(false);
+          void loadTemplates();
+        }}
+      />
     </Screen>
   );
 }
@@ -197,6 +276,10 @@ const styles = StyleSheet.create({
   },
   error: {
     color: colors.danger,
+    fontSize: typography.sizes.sm,
+  },
+  banner: {
+    color: colors.success,
     fontSize: typography.sizes.sm,
   },
   group: {

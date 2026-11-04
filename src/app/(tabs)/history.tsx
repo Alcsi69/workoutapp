@@ -4,6 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { Button } from '../../components/Button';
 import { Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
+import { SyncCard } from '../../components/SyncCard';
 import { getDatabase } from '../../db/client';
 import { getSessionDetail, getSessionHistory } from '../../db/repository';
 import type { SessionHistorySummary } from '../../db/repository';
@@ -221,6 +222,8 @@ export default function HistoryScreen() {
         data={sessions}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => <SessionRow session={item} />}
+        ListHeaderComponent={<SyncCard />}
+        ListHeaderComponentStyle={styles.listHeader}
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
       />
@@ -239,6 +242,9 @@ const styles = StyleSheet.create({
   list: {
     gap: spacing.md,
     paddingBottom: spacing.xxl,
+  },
+  listHeader: {
+    marginBottom: spacing.md,
   },
   row: {
     backgroundColor: colors.surface,

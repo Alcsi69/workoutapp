@@ -13,6 +13,7 @@ import {
 import type { OnboardingStep } from '../../store/useOnboardingStore';
 import { getDatabase } from '../../db/client';
 import { getUserProfile, saveOnboardingPayload, USER_PROFILE_ID } from '../../db/repository';
+import { generateProgramFromProfile } from '../../services/routineGenerator';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
 
@@ -66,6 +67,8 @@ export default function OnboardingScreen() {
       const db = await getDatabase();
       const payload = buildOnboardingPayload(useOnboardingStore.getState(), USER_PROFILE_ID);
       await saveOnboardingPayload(db, payload);
+      // Build the tailored program immediately so the tabs show the real plan.
+      await generateProgramFromProfile(db);
       useOnboardingStore.getState().reset();
       router.replace('/(tabs)');
     } catch (cause: unknown) {

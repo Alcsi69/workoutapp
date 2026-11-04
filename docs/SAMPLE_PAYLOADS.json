@@ -1,4 +1,3 @@
-```json
 {
   "onboardingRequestExample": {
     "userId": "usr_01J9X8Z",
@@ -30,5 +29,120 @@
         "hack_squat": "belt_squat"
       }
     }
+  },
+
+  "aiProgramRequestExample": {
+    "requestId": "ai_req_m3k2f1ab",
+    "generatedAt": "2026-11-04T18:30:00.000Z",
+    "locale": "hu",
+    "profile": {
+      "userId": "usr_local",
+      "locale": "hu",
+      "biometrics": {
+        "age": 25,
+        "weightKg": 78.5,
+        "heightCm": 180
+      },
+      "trainingProfile": {
+        "primaryGoal": "powerbuilding",
+        "experienceMonths": 36,
+        "strengthDaysPerWeek": 4,
+        "runningDaysPerWeek": 3,
+        "targetRunDistanceKm": 5,
+        "sessionDurationMinutes": 75,
+        "equipment": "full_gym"
+      },
+      "constraints": {
+        "jointLimitations": [
+          {
+            "area": "knees",
+            "severity": "avoid_heavy_axial_load",
+            "notes": "Avoid high-shear knee flexion under heavy load; use knee sleeves and flat shoes."
+          }
+        ],
+        "excludedExerciseIds": ["hack_squat"],
+        "preferredSubstitutions": {
+          "hack_squat": "belt_squat"
+        }
+      }
+    },
+    "catalog": [
+      {
+        "id": "front_squat",
+        "nameHu": "Elölguggolás",
+        "nameEn": "Front Squat",
+        "category": "compound_lower",
+        "primaryMuscles": ["quadriceps", "glutes", "core"],
+        "axialLoadScore": 3,
+        "kneeStressScore": 3,
+        "defaultSubstituteIds": ["belt_squat"]
+      }
+    ]
+  },
+
+  "syncBatchRequestExample": {
+    "batchId": "sync_m3k2f1ab",
+    "generatedAt": "2026-11-04T18:30:00.000Z",
+    "deviceId": "usr_local",
+    "sessions": [
+      {
+        "id": "sess_m3k2f1ab",
+        "programDayId": "tpl_lower_b",
+        "sessionType": "strength",
+        "title": "Lower B - Román felhúzás & Öves guggolás",
+        "startedAt": "2026-11-04T17:00:00.000Z",
+        "completedAt": "2026-11-04T18:15:00.000Z",
+        "exerciseBlocks": [
+          {
+            "id": "sess_m3k2f1ab:0",
+            "sessionId": "sess_m3k2f1ab",
+            "orderIndex": 0,
+            "exerciseId": "romanian_deadlift",
+            "restSeconds": 180,
+            "targetSets": 4,
+            "targetReps": "6-8",
+            "exercise": {
+              "id": "romanian_deadlift",
+              "nameHu": "Román felhúzás",
+              "nameEn": "Romanian Deadlift",
+              "category": "compound_lower",
+              "primaryMuscles": ["hamstrings", "glutes", "lower_back"],
+              "axialLoadScore": 4,
+              "kneeStressScore": 2,
+              "defaultSubstituteIds": []
+            },
+            "sets": [
+              {
+                "id": "set_m3k2f1ab",
+                "setNumber": 1,
+                "setType": "working",
+                "actualWeightKg": 90,
+                "targetReps": "6-8",
+                "actualReps": 8,
+                "rpe": 8,
+                "completedAt": "2026-11-04T17:12:00.000Z"
+              }
+            ]
+          }
+        ],
+        "syncStatus": "local_dirty"
+      },
+      {
+        "id": "sess_run_01",
+        "programDayId": "tpl_run_5k",
+        "sessionType": "running",
+        "title": "5 km futás",
+        "startedAt": "2026-11-05T06:30:00.000Z",
+        "completedAt": "2026-11-05T07:00:00.000Z",
+        "exerciseBlocks": [],
+        "runningMetrics": {
+          "distanceKm": 5,
+          "durationSeconds": 1500,
+          "avgPaceSecondsPerKm": 300,
+          "perceivedEffortRpe": 7
+        },
+        "syncStatus": "local_dirty"
+      }
+    ]
   }
 }

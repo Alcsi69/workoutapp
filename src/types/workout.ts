@@ -178,3 +178,47 @@ export interface WorkoutTemplate {
 export interface WorkoutTemplateExercise extends TemplateExerciseBlock {
   exercise: ExerciseCatalogItem;
 }
+
+// --- Phase 4: AI program requests, custom templates, sync batches -----------
+// These mirror the examples documented in /docs/SAMPLE_PAYLOADS.json.
+
+/** A block supplied when the user builds a custom template by hand. */
+export interface CustomTemplateBlockInput {
+  exerciseId: string;
+  /** Defaults to 3 when omitted. */
+  targetSets?: number;
+  /** Free-form rep prescription, e.g. "6-8". Defaults to "8-10". */
+  targetReps?: string;
+  /** Defaults to 90. */
+  restSeconds?: number;
+  notes?: string;
+}
+
+/** Everything the template editor collects before persisting a new template. */
+export interface CustomTemplateInput {
+  title: string;
+  sessionType: SessionType;
+  goal?: TrainingGoal;
+  blocks: CustomTemplateBlockInput[];
+}
+
+/**
+ * Body POSTed to the external routine-generation endpoint. Serialized verbatim —
+ * `profile` is the pure `OnboardingPayload` (drop the UserProfile bookkeeping).
+ */
+export interface AiProgramRequestPayload {
+  requestId: string;
+  generatedAt: string; // ISO-8601
+  locale: OnboardingPayload['locale'];
+  profile: OnboardingPayload;
+  /** The exercise vocabulary the generator may pick from. */
+  catalog: ExerciseCatalogItem[];
+}
+
+/** Body POSTed when flushing locally dirty sessions to the backend. */
+export interface SyncBatchPayload {
+  batchId: string;
+  generatedAt: string; // ISO-8601
+  deviceId: string;
+  sessions: WorkoutSessionLog[];
+}

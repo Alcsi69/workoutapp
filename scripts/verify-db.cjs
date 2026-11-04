@@ -11,7 +11,7 @@
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { migrate, SCHEMA_VERSION } = require('../.verify-build/db/schema.js');
-const { seedExerciseCatalog } = require('../.verify-build/db/seed.js');
+const { seedExerciseCatalog, CORE_EXERCISE_CATALOG } = require('../.verify-build/db/seed.js');
 const repository = require('../.verify-build/db/repository.js');
 const {
   pickRecommendedSession,
@@ -29,6 +29,14 @@ const {
   computeRestRemainingMs,
   formatRestClock,
 } = require('../.verify-build/store/useActiveWorkoutStore.js');
+const {
+  generateProgramFromProfile,
+  buildAiProgramRequestPayload,
+} = require('../.verify-build/services/routineGenerator.js');
+const {
+  syncPendingWorkouts,
+  buildSyncBatchPayload,
+} = require('../.verify-build/services/syncService.js');
 
 /** Thin async facade over node:sqlite matching the expo-sqlite API surface we use. */
 function createDatabase() {
@@ -99,9 +107,27 @@ async function main() {
     assert.ok(tables.includes('user_profiles'));
   });
 
-  await check('exercise catalog seeds', async () => {
+  await check('exercise catalog seeds the full catalog', async () => {
     const inserted = await seedExerciseCatalog(db);
-    assert.ok(inserted > 0, `inserted ${inserted}`);
+    assert.equal(inserted, CORE_EXERCISE_CATALOG.length);
+    assert.ok(inserted >= 28, `expected 28+ exercises, inserted ${inserted}`);
+  });
+
+  await check('re-seeding an unchanged catalog is a no-op', async () => {
+    const inserted = await seedExerciseCatalog(db);
+    assert.equal(inserted, 0);
+  });
+
+  await check('re-seeding updates a changed score so existing DBs converge', async () => {
+    raw
+      .prepare("UPDATE exercise_catalog SET knee_stress_score = 1 WHERE id = 'front_squat'")
+      .run();
+    const changed = await seedExerciseCatalog(db);
+    assert.equal(changed, 1);
+    const row = raw
+      .prepare("SELECT knee_stress_score FROM exercise_catalog WHERE id = 'front_squat'")
+      .get();
+    assert.equal(row.knee_stress_score, 3);
   });
 
   await check('seedDefaultTemplates inserts the 7 default templates', async () => {
@@ -200,17 +226,18 @@ async function main() {
   console.log('\ncatalog + templates reads');
   await check('getExerciseCatalog filters by category', async () => {
     const cardio = await repository.getExerciseCatalog(db, 'cardio_run');
-    assert.equal(cardio.length, 2);
+    assert.equal(cardio.length, 6);
     assert.ok(cardio.every((item) => item.category === 'cardio_run'));
   });
 
   await check('catalog JSON columns parse cleanly', async () => {
     const catalog = await repository.getExerciseCatalog(db);
-    assert.equal(catalog.length, 12);
+    assert.equal(catalog.length, CORE_EXERCISE_CATALOG.length);
     const frontSquat = catalog.find((item) => item.id === 'front_squat');
     assert.deepEqual(frontSquat.primaryMuscles, ['quadriceps', 'glutes', 'core']);
     assert.deepEqual(frontSquat.defaultSubstituteIds, ['belt_squat']);
-    assert.equal(frontSquat.kneeStressScore, 4);
+    // Lowered to 3 so the front squat survives avoid_heavy_axial_load (knee sleeves).
+    assert.equal(frontSquat.kneeStressScore, 3);
   });
 
   const templates = await repository.getWorkoutTemplates(db);
@@ -652,6 +679,320 @@ async function main() {
     assert.equal(restStore.getState().restEndTimeMs, null);
     assert.equal(restStore.getState().activeRestBlockId, null);
     restStore.getState().reset();
+  });
+
+  console.log('\nroutine generation (phase 4)');
+  // Controlled profile: knees constrained, hack_squat excluded+substituted, 7 km target.
+  await repository.saveOnboardingPayload(db, {
+    ...payload,
+    trainingProfile: { ...payload.trainingProfile, targetRunDistanceKm: 7 },
+  });
+
+  const customHack = await repository.createCustomTemplate(db, {
+    title: 'Knee Stress Day',
+    sessionType: 'strength',
+    blocks: [
+      { exerciseId: 'hack_squat', targetSets: 4, targetReps: '8-10', restSeconds: 120 },
+    ],
+  });
+
+  await check('createCustomTemplate persists a user template with its blocks', () => {
+    assert.ok(customHack.id.startsWith('tpl_user'));
+    assert.equal(customHack.title, 'Knee Stress Day');
+    assert.equal(customHack.sessionType, 'strength');
+    assert.equal(customHack.exercises.length, 1);
+    assert.equal(customHack.exercises[0].exerciseId, 'hack_squat');
+    assert.equal(customHack.exercises[0].targetSets, 4);
+    assert.equal(customHack.exercises[0].targetReps, '8-10');
+    assert.equal(customHack.exercises[0].exercise.nameHu, 'Hack guggolás');
+  });
+
+  await check('createCustomTemplate rejects unknown exercises', async () => {
+    await assert.rejects(
+      () =>
+        repository.createCustomTemplate(db, {
+          title: 'Bad',
+          sessionType: 'strength',
+          blocks: [{ exerciseId: 'does_not_exist' }],
+        }),
+      /Ismeretlen gyakorlat/,
+    );
+  });
+
+  const genResult = await generateProgramFromProfile(db);
+
+  await check('generateProgramFromProfile swaps hack_squat -> belt_squat under knee constraint', () => {
+    assert.equal(genResult.generated, true);
+    const blockId = customHack.exercises[0].id;
+    const swap = genResult.appliedSubstitutions.find((entry) => entry.blockId === blockId);
+    assert.ok(swap !== undefined, 'expected a substitution for the hack_squat block');
+    assert.equal(swap.fromExerciseId, 'hack_squat');
+    assert.equal(swap.toExerciseId, 'belt_squat');
+    assert.equal(swap.reason, 'excluded');
+    const row = raw
+      .prepare(
+        'SELECT exercise_id, substituted_from_exercise_id FROM template_exercise_blocks WHERE id = ?',
+      )
+      .get(blockId);
+    assert.equal(row.exercise_id, 'belt_squat');
+    assert.equal(row.substituted_from_exercise_id, 'hack_squat');
+  });
+
+  await check('avoid_heavy_axial_load keeps front_squat and leg_extension on Lower A', async () => {
+    const lowerA = await repository.getWorkoutTemplateById(db, 'tpl_lower_a');
+    assert.ok(lowerA !== null);
+    // 75-minute session -> 5 exercises, spec anchors first.
+    assert.deepEqual(
+      lowerA.exercises.map((block) => block.exerciseId),
+      ['front_squat', 'belt_squat', 'leg_extension', 'seated_leg_curl', 'standing_calf_raise'],
+    );
+    assert.equal(genResult.appliedSubstitutions.some((e) => e.fromExerciseId === 'front_squat'), false);
+    assert.equal(genResult.appliedSubstitutions.some((e) => e.fromExerciseId === 'leg_extension'), false);
+  });
+
+  await check('the program is sized to the 4-day strength / 3-day running split', () => {
+    assert.equal(genResult.strengthTemplateCount, 5); // 4 generated + 1 custom
+    assert.equal(genResult.runningTemplateCount, 3);
+    assert.equal(genResult.templateCount, 8);
+  });
+
+  await check('Lower B leads with Román felhúzás then the spec order', async () => {
+    const lowerB = await repository.getWorkoutTemplateById(db, 'tpl_lower_b');
+    assert.ok(lowerB !== null);
+    assert.deepEqual(
+      lowerB.exercises.map((block) => block.exerciseId),
+      ['romanian_deadlift', 'belt_squat', 'adductor_machine', 'leg_extension', 'seated_calf_raise'],
+    );
+  });
+
+  await check('running days are distinct and the long run scales to the 7 km target', async () => {
+    assert.equal(genResult.runningTargetKm, 7);
+    const day1 = await repository.getWorkoutTemplateById(db, 'tpl_run_1');
+    const day2 = await repository.getWorkoutTemplateById(db, 'tpl_run_2');
+    const day3 = await repository.getWorkoutTemplateById(db, 'tpl_run_3');
+    assert.equal(day1.title, 'Könnyű alapozó futás (5 km)');
+    assert.equal(day1.exercises[0].exerciseId, 'run_easy_5k');
+    assert.equal(day2.title, 'Tempó futás (5 km)');
+    assert.equal(day2.exercises[0].exerciseId, 'run_tempo_5k');
+    assert.equal(day3.title, 'Hosszabb futás (7 km)');
+    assert.equal(day3.exercises[0].exerciseId, 'run_long_7k');
+    assert.equal(day3.exercises[0].targetReps, '7 km');
+    // The redundant legacy single-distance templates are collapsed away.
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_run_5k'), null);
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_run_7k'), null);
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_run_tempo'), null);
+  });
+
+  await check('generateProgramFromProfile is idempotent after the first pass', async () => {
+    const second = await generateProgramFromProfile(db);
+    assert.equal(second.appliedSubstitutions.length, 0);
+    assert.equal(second.templateCount, genResult.templateCount);
+  });
+
+  await check('buildAiProgramRequestPayload matches the sample contract', async () => {
+    const request = await buildAiProgramRequestPayload(db);
+    assert.ok(request.requestId.startsWith('ai_req'));
+    assert.ok(request.generatedAt.length > 0);
+    assert.equal(request.locale, 'hu');
+    assert.equal(request.profile.userId, 'usr_local');
+    assert.equal(request.profile.trainingProfile.targetRunDistanceKm, 7);
+    // UserProfile bookkeeping columns are stripped from the request body.
+    assert.equal(request.profile.onboardingCompletedAt, undefined);
+    assert.equal(request.profile.updatedAt, undefined);
+    assert.deepEqual(request.profile.constraints.preferredSubstitutions, {
+      hack_squat: 'belt_squat',
+    });
+    assert.equal(request.catalog.length, CORE_EXERCISE_CATALOG.length);
+    assert.ok(request.catalog.some((item) => item.id === 'belt_squat'));
+  });
+
+  console.log('\nconstraint matrix + split builder (phase 4)');
+
+  await repository.saveOnboardingPayload(db, {
+    ...payload,
+    constraints: {
+      jointLimitations: [{ area: 'knees', severity: 'mild_discomfort' }],
+      excludedExerciseIds: [],
+      preferredSubstitutions: {},
+    },
+  });
+  const mildResult = await generateProgramFromProfile(db);
+
+  await check('mild knee discomfort keeps every compound and annotates the block', async () => {
+    assert.equal(mildResult.appliedSubstitutions.length, 0);
+    const lowerA = await repository.getWorkoutTemplateById(db, 'tpl_lower_a');
+    const squat = lowerA.exercises.find((block) => block.exerciseId === 'front_squat');
+    assert.ok(squat !== undefined);
+    assert.ok(squat.notes.includes('Térdgumi / lapos talpú cipő ajánlott'));
+    assert.ok(squat.notes.includes('Max RPE 8.5'));
+  });
+
+  await repository.saveOnboardingPayload(db, {
+    ...payload,
+    constraints: {
+      jointLimitations: [{ area: 'knees', severity: 'strict_exclude' }],
+      excludedExerciseIds: [],
+      preferredSubstitutions: {},
+    },
+  });
+  await generateProgramFromProfile(db);
+
+  await check('strict knee exclusion swaps leg_extension for a <=2 knee-stress lift', async () => {
+    const lowerA = await repository.getWorkoutTemplateById(db, 'tpl_lower_a');
+    const ids = lowerA.exercises.map((block) => block.exerciseId);
+    assert.equal(ids.includes('leg_extension'), false);
+    assert.ok(lowerA.exercises.every((block) => block.exercise.kneeStressScore <= 3));
+    // front_squat sits at 3 (below the >=4 strict threshold) and is preserved.
+    assert.ok(ids.includes('front_squat'));
+  });
+
+  await repository.saveOnboardingPayload(db, {
+    ...payload,
+    trainingProfile: {
+      ...payload.trainingProfile,
+      strengthDaysPerWeek: 2,
+      runningDaysPerWeek: 0,
+      targetRunDistanceKm: undefined,
+    },
+    constraints: { jointLimitations: [], excludedExerciseIds: [], preferredSubstitutions: {} },
+  });
+  const twoDay = await generateProgramFromProfile(db);
+
+  await check('2 strength days build Full Body A/B and drop the 4-day templates', async () => {
+    assert.equal(twoDay.runningTemplateCount, 0);
+    assert.ok((await repository.getWorkoutTemplateById(db, 'tpl_full_a')) !== null);
+    assert.ok((await repository.getWorkoutTemplateById(db, 'tpl_full_b')) !== null);
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_upper_a'), null);
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_lower_a'), null);
+  });
+
+  await repository.saveOnboardingPayload(db, {
+    ...payload,
+    trainingProfile: { ...payload.trainingProfile, strengthDaysPerWeek: 3, runningDaysPerWeek: 2 },
+    constraints: { jointLimitations: [], excludedExerciseIds: [], preferredSubstitutions: {} },
+  });
+  const threeDay = await generateProgramFromProfile(db);
+
+  await check('3 strength days build Upper/Lower/Full with 2 running days', async () => {
+    assert.equal(threeDay.runningTemplateCount, 2);
+    assert.ok((await repository.getWorkoutTemplateById(db, 'tpl_upper_a')) !== null);
+    assert.ok((await repository.getWorkoutTemplateById(db, 'tpl_lower_a')) !== null);
+    assert.ok((await repository.getWorkoutTemplateById(db, 'tpl_full_b')) !== null);
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_upper_b'), null);
+    assert.equal(await repository.getWorkoutTemplateById(db, 'tpl_lower_b'), null);
+  });
+
+  await repository.saveOnboardingPayload(db, {
+    ...payload,
+    trainingProfile: {
+      ...payload.trainingProfile,
+      strengthDaysPerWeek: 4,
+      runningDaysPerWeek: 0,
+      targetRunDistanceKm: undefined,
+    },
+    constraints: {
+      jointLimitations: [{ area: 'lower_back', severity: 'strict_exclude' }],
+      excludedExerciseIds: [],
+      preferredSubstitutions: {},
+    },
+  });
+  await generateProgramFromProfile(db);
+
+  await check('lower_back strict exclusion replaces the RDL with an axial<=2 lift', async () => {
+    const lowerB = await repository.getWorkoutTemplateById(db, 'tpl_lower_b');
+    assert.equal(lowerB.exercises.some((block) => block.exerciseId === 'romanian_deadlift'), false);
+    assert.ok(lowerB.exercises.every((block) => block.exercise.axialLoadScore <= 2));
+  });
+
+  console.log('\noffline sync (phase 4)');
+  // Mark every surviving session dirty to exercise the queue end to end.
+  raw.prepare("UPDATE session_logs SET sync_status = 'local_dirty'").run();
+
+  const dirtyIds = await repository.getDirtySessionIds(db);
+  const dirtyPayload = await repository.getDirtySessionsPayload(db);
+
+  await check('getDirtySessionsPayload hydrates full nested session graphs', () => {
+    assert.ok(dirtyIds.length > 0);
+    assert.equal(dirtyPayload.length, dirtyIds.length);
+    const strengthSession = dirtyPayload.find((session) => session.id === lowerSessionId);
+    assert.ok(strengthSession !== undefined);
+    assert.equal(strengthSession.syncStatus, 'local_dirty');
+    assert.equal(strengthSession.sessionType, 'strength');
+    assert.ok(strengthSession.exerciseBlocks.length > 0);
+    const block = strengthSession.exerciseBlocks[0];
+    assert.ok(Array.isArray(block.sets));
+    assert.ok(block.exercise !== undefined);
+    assert.equal(block.exercise.id, block.exerciseId);
+  });
+
+  await check('buildSyncBatchPayload wraps every dirty session in a batch envelope', async () => {
+    const batch = await buildSyncBatchPayload(db);
+    assert.ok(batch.batchId.startsWith('sync_'));
+    assert.equal(batch.deviceId, repository.USER_PROFILE_ID);
+    assert.equal(batch.sessions.length, dirtyPayload.length);
+  });
+
+  await check('syncPendingWorkouts without an endpoint stays a local dry run', async () => {
+    const result = await syncPendingWorkouts(db);
+    assert.equal(result.mode, 'dry_run');
+    assert.equal(result.sessionCount, dirtyPayload.length);
+    assert.equal(result.syncedSessionIds.length, 0);
+    assert.equal(result.payload.sessions.length, dirtyPayload.length);
+    assert.equal(await repository.countDirtySessions(db), dirtyPayload.length);
+  });
+
+  await check('a failing upload degrades to a dry run and keeps rows dirty', async () => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: false, status: 500 });
+    try {
+      const result = await syncPendingWorkouts(db, 'https://example.test/workouts');
+      assert.equal(result.mode, 'dry_run');
+      assert.ok(result.error !== undefined);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+    assert.equal(await repository.countDirtySessions(db), dirtyPayload.length);
+  });
+
+  await check('syncPendingWorkouts uploads and marks synced on a 2xx response', async () => {
+    const calls = [];
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200 };
+    };
+    try {
+      const result = await syncPendingWorkouts(db, 'https://example.test/workouts');
+      assert.equal(result.mode, 'remote');
+      assert.equal(result.sessionCount, dirtyPayload.length);
+      assert.equal(result.syncedSessionIds.length, dirtyPayload.length);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, 'https://example.test/workouts');
+      const sent = JSON.parse(calls[0].init.body);
+      assert.equal(sent.sessions.length, dirtyPayload.length);
+      assert.equal(await repository.countDirtySessions(db), 0);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  await check('markSessionsSynced flips only the given ids', async () => {
+    raw
+      .prepare("UPDATE session_logs SET sync_status = 'local_dirty' WHERE id = ?")
+      .run(lowerSessionId);
+    const changed = await repository.markSessionsSynced(db, [lowerSessionId]);
+    assert.equal(changed, 1);
+    const row = raw
+      .prepare('SELECT sync_status FROM session_logs WHERE id = ?')
+      .get(lowerSessionId);
+    assert.equal(row.sync_status, 'synced');
+  });
+
+  await check('syncPendingWorkouts is a noop when nothing is dirty', async () => {
+    raw.prepare("UPDATE session_logs SET sync_status = 'synced'").run();
+    const result = await syncPendingWorkouts(db);
+    assert.equal(result.mode, 'noop');
+    assert.equal(result.sessionCount, 0);
   });
 
   await check('no foreign key violations', () => {
