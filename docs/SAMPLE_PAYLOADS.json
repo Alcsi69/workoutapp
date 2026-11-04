@@ -1,0 +1,34 @@
+```json
+{
+  "onboardingRequestExample": {
+    "userId": "usr_01J9X8Z",
+    "locale": "hu",
+    "biometrics": {
+      "age": 25,
+      "weightKg": 78.5,
+      "heightCm": 180
+    },
+    "trainingProfile": {
+      "primaryGoal": "powerbuilding",
+      "experienceMonths": 36,
+      "strengthDaysPerWeek": 4,
+      "runningDaysPerWeek": 3,
+      "targetRunDistanceKm": 5,
+      "sessionDurationMinutes": 75,
+      "equipment": "full_gym"
+    },
+    "constraints": {
+      "jointLimitations": [
+        {
+          "area": "knees",
+          "severity": "avoid_heavy_axial_load",
+          "notes": "Avoid high-shear knee flexion under heavy load; use knee sleeves and flat shoes."
+        }
+      ],
+      "excludedExerciseIds": ["hack_squat"],
+      "preferredSubstitutions": {
+        "hack_squat": "belt_squat"
+      }
+    }
+  }
+}
