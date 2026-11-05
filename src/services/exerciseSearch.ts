@@ -5,17 +5,25 @@
 
 import type { Equipment, ExerciseCatalogItem } from '../types/workout';
 
-/** The muscle-group buckets the picker's filter chips map to. */
+/**
+ * The dedicated muscle-group filter chips. Every major group is its own bucket
+ * (no bundling), so compound lifts surface under each group they actually train.
+ */
 export type MuscleGroup =
-  | 'legs_front'
-  | 'legs_posterior'
+  | 'quads'
+  | 'hamstrings'
+  | 'glutes'
+  | 'adductors'
+  | 'calves'
   | 'chest'
   | 'back'
   | 'shoulders'
-  | 'arms'
-  | 'calf_core'
-  | 'cardio'
-  | 'other';
+  | 'traps'
+  | 'biceps'
+  | 'triceps'
+  | 'forearms'
+  | 'core'
+  | 'cardio';
 
 /** A single equipment chip can cover several raw `Equipment` values. */
 export type EquipmentFilter = 'barbell' | 'dumbbell' | 'machine' | 'cable' | 'bodyweight';
@@ -53,28 +61,64 @@ export function exerciseMatchesQuery(item: ExerciseCatalogItem, query: string): 
   );
 }
 
-const MUSCLE_GROUP_PRECEDENCE: readonly { group: MuscleGroup; muscles: readonly string[] }[] = [
-  { group: 'legs_front', muscles: ['quadriceps'] },
-  { group: 'legs_posterior', muscles: ['hamstrings', 'glutes', 'adductors', 'abductors'] },
-  { group: 'chest', muscles: ['chest'] },
-  { group: 'shoulders', muscles: ['shoulders', 'front_delts', 'rear_delts'] },
-  { group: 'back', muscles: ['back', 'lats', 'upper_back', 'trapezius'] },
-  { group: 'arms', muscles: ['biceps', 'triceps', 'forearms'] },
-  { group: 'calf_core', muscles: ['calves', 'core', 'tibialis'] },
+/**
+ * Raw muscle tokens (as written in catalog `primaryMuscles`) that belong to each
+ * filter chip. Tokens are ungated across chips where anatomically sensible (e.g.
+ * a shrug trains both `upper_back` and `trapezius`), and an exercise matches a
+ * chip if ANY of its `primaryMuscles` is a member — so a lift like the Romanian
+ * deadlift (`hamstrings`, `glutes`, `lower_back`) appears under both Hamstrings
+ * and Glutes rather than being hidden in a single bundle.
+ */
+const MUSCLE_GROUP_MEMBERS: Record<MuscleGroup, readonly string[]> = {
+  quads: ['quadriceps'],
+  hamstrings: ['hamstrings'],
+  glutes: ['glutes'],
+  adductors: ['adductors', 'abductors'],
+  calves: ['calves', 'tibialis'],
+  chest: ['chest'],
+  back: ['back', 'lats', 'upper_back', 'lower_back'],
+  shoulders: ['shoulders', 'front_delts', 'rear_delts'],
+  traps: ['trapezius'],
+  biceps: ['biceps'],
+  triceps: ['triceps'],
+  forearms: ['forearms'],
+  core: ['core'],
+  cardio: ['cardiovascular'],
+};
+
+/** The ordered filter chips the picker renders (cardio last). */
+export const MUSCLE_GROUPS: readonly MuscleGroup[] = [
+  'quads',
+  'hamstrings',
+  'glutes',
+  'adductors',
+  'calves',
+  'chest',
+  'back',
+  'shoulders',
+  'traps',
+  'biceps',
+  'triceps',
+  'forearms',
+  'core',
+  'cardio',
 ];
 
-/** Maps an exercise to its single best muscle-group bucket. */
-export function deriveMuscleGroup(item: ExerciseCatalogItem): MuscleGroup {
-  if (item.category === 'cardio_run') {
-    return 'cardio';
+/**
+ * True when `item` belongs to `group`. Cardio matches by run category/pattern;
+ * every other group matches when ANY primary muscle is a member of that group.
+ */
+export function matchesMuscleGroup(item: ExerciseCatalogItem, group: MuscleGroup): boolean {
+  if (group === 'cardio') {
+    return item.category === 'cardio_run' || item.movementPattern === 'cardio';
   }
-  const muscles = new Set(item.primaryMuscles);
-  for (const rule of MUSCLE_GROUP_PRECEDENCE) {
-    if (rule.muscles.some((muscle) => muscles.has(muscle))) {
-      return rule.group;
-    }
-  }
-  return 'other';
+  const members = MUSCLE_GROUP_MEMBERS[group];
+  return item.primaryMuscles.some((muscle) => members.includes(muscle));
+}
+
+/** Every filter group an exercise belongs to (compound lifts match several). */
+export function deriveMuscleGroups(item: ExerciseCatalogItem): MuscleGroup[] {
+  return MUSCLE_GROUPS.filter((group) => matchesMuscleGroup(item, group));
 }
 
 export function equipmentMatchesFilter(
@@ -103,7 +147,7 @@ export function filterExercises(
     if (!exerciseMatchesQuery(item, query)) {
       return false;
     }
-    if (muscleGroup !== null && deriveMuscleGroup(item) !== muscleGroup) {
+    if (muscleGroup !== null && !matchesMuscleGroup(item, muscleGroup)) {
       return false;
     }
     if (equipment !== null && !equipmentMatchesFilter(item, equipment)) {

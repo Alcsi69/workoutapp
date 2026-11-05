@@ -17,7 +17,8 @@ const {
   normalizeSearchText,
   exerciseMatchesQuery,
   filterExercises,
-  deriveMuscleGroup,
+  matchesMuscleGroup,
+  deriveMuscleGroups,
 } = require('../.verify-build/services/exerciseSearch.js');
 const repository = require('../.verify-build/db/repository.js');
 const analytics = require('../.verify-build/services/analytics.js');
@@ -307,16 +308,69 @@ async function main() {
     assert.ok(byEn.every((item) => exerciseMatchesQuery(item, 'squat')));
   });
 
+  await check('granular muscle-group filters bucket compound lifts into every trained group', () => {
+    const byId = (id) => EXERCISE_CATALOG.find((item) => item.id === id);
+    const rdl = byId('romanian_deadlift'); // hamstrings + glutes + lower_back
+    assert.equal(matchesMuscleGroup(rdl, 'hamstrings'), true);
+    assert.equal(matchesMuscleGroup(rdl, 'glutes'), true);
+    assert.equal(matchesMuscleGroup(rdl, 'back'), true); // lower_back rolls into back
+    assert.equal(matchesMuscleGroup(rdl, 'quads'), false);
+    assert.deepEqual(deriveMuscleGroups(rdl), ['hamstrings', 'glutes', 'back']);
+
+    // A lift sharing two groups is no longer hidden from either chip.
+    assert.deepEqual(deriveMuscleGroups(byId('hip_thrust')), ['hamstrings', 'glutes']);
+    assert.equal(matchesMuscleGroup(byId('adductor_machine'), 'adductors'), true);
+    assert.equal(matchesMuscleGroup(byId('abductor_machine'), 'adductors'), true);
+    assert.equal(matchesMuscleGroup(byId('standing_calf_raise'), 'calves'), true);
+    assert.equal(matchesMuscleGroup(byId('barbell_shrug'), 'traps'), true);
+    assert.equal(matchesMuscleGroup(byId('barbell_curl'), 'biceps'), true);
+    assert.equal(matchesMuscleGroup(byId('triceps_pushdown'), 'triceps'), true);
+    assert.equal(matchesMuscleGroup(byId('wrist_curl'), 'forearms'), true);
+    assert.equal(matchesMuscleGroup(byId('plank'), 'core'), true);
+    // Cardio is bucketed by run category/pattern, not a muscle token.
+    assert.equal(matchesMuscleGroup(byId('run_easy_5k'), 'cardio'), true);
+  });
+
   await check('muscle-group + equipment filters narrow the catalog', () => {
-    assert.equal(deriveMuscleGroup({ ...EXERCISE_CATALOG[0], category: 'compound_lower', primaryMuscles: ['quadriceps'] }), 'legs_front');
+    const quads = filterExercises(EXERCISE_CATALOG, { muscleGroup: 'quads' });
+    assert.ok(quads.length > 0);
+    assert.ok(quads.every((item) => matchesMuscleGroup(item, 'quads')));
+    assert.ok(quads.some((item) => item.id === 'front_squat'));
+    assert.ok(quads.some((item) => item.id === 'leg_extension'));
+
+    const hamstrings = filterExercises(EXERCISE_CATALOG, { muscleGroup: 'hamstrings' });
+    assert.ok(hamstrings.every((item) => matchesMuscleGroup(item, 'hamstrings')));
+    assert.ok(hamstrings.some((item) => item.id === 'romanian_deadlift'));
+    assert.ok(hamstrings.some((item) => item.id === 'seated_leg_curl'));
+    // The glutes chip still surfaces the same shared compound.
+    assert.ok(
+      filterExercises(EXERCISE_CATALOG, { muscleGroup: 'glutes' }).some(
+        (item) => item.id === 'romanian_deadlift',
+      ),
+    );
+
+    const calves = filterExercises(EXERCISE_CATALOG, { muscleGroup: 'calves' });
+    assert.ok(calves.some((item) => item.id === 'standing_calf_raise'));
+    assert.ok(calves.every((item) => matchesMuscleGroup(item, 'calves')));
+
     const cardio = filterExercises(EXERCISE_CATALOG, { muscleGroup: 'cardio' });
-    assert.ok(cardio.every((item) => deriveMuscleGroup(item) === 'cardio'));
+    assert.ok(cardio.every((item) => matchesMuscleGroup(item, 'cardio')));
     assert.ok(cardio.some((item) => item.id === 'run_easy_5k'));
+
+    for (const group of ['adductors', 'biceps', 'triceps', 'forearms', 'core']) {
+      assert.ok(
+        filterExercises(EXERCISE_CATALOG, { muscleGroup: group }).length > 0,
+        `expected at least one exercise under ${group}`,
+      );
+    }
+
     const barbell = filterExercises(EXERCISE_CATALOG, { equipment: 'barbell' });
     assert.ok(barbell.every((item) => item.equipment === 'barbell' || item.equipment === 'specialty_bar'));
     assert.ok(barbell.some((item) => item.id === 'bench_press'));
+
+    // A chest bench also trains triceps/front delts, so it recurs under each chip.
     const combined = filterExercises(EXERCISE_CATALOG, { query: 'nyomás', muscleGroup: 'chest' });
-    assert.ok(combined.every((item) => deriveMuscleGroup(item) === 'chest'));
+    assert.ok(combined.every((item) => matchesMuscleGroup(item, 'chest')));
   });
 
   await check('createCustomExercise persists a user exercise that is searchable', async () => {

@@ -16,22 +16,12 @@ import { getDatabase } from '../db/client';
 import { createCustomExercise } from '../db/repository';
 import {
   filterExercises,
+  MUSCLE_GROUPS,
 } from '../services/exerciseSearch';
 import type { EquipmentFilter, MuscleGroup } from '../services/exerciseSearch';
 import hu from '../i18n/hu';
 import { colors, radius, spacing, typography } from '../theme/tokens';
 import type { Equipment, ExerciseCatalogItem } from '../types/workout';
-
-const MUSCLE_GROUPS: readonly MuscleGroup[] = [
-  'legs_front',
-  'legs_posterior',
-  'chest',
-  'back',
-  'shoulders',
-  'arms',
-  'calf_core',
-  'cardio',
-];
 
 const EQUIPMENT_FILTERS: readonly EquipmentFilter[] = [
   'barbell',
@@ -52,15 +42,20 @@ const EQUIPMENT_FILTER_VALUE: Record<EquipmentFilter, Equipment> = {
 
 /** Representative muscles + category for a custom exercise's chosen group. */
 const GROUP_TO_MUSCLES: Record<MuscleGroup, readonly string[]> = {
-  legs_front: ['quadriceps'],
-  legs_posterior: ['hamstrings', 'glutes'],
+  quads: ['quadriceps'],
+  hamstrings: ['hamstrings'],
+  glutes: ['glutes'],
+  adductors: ['adductors'],
+  calves: ['calves'],
   chest: ['chest'],
   back: ['back'],
   shoulders: ['shoulders'],
-  arms: ['biceps'],
-  calf_core: ['core'],
+  traps: ['trapezius'],
+  biceps: ['biceps'],
+  triceps: ['triceps'],
+  forearms: ['forearms'],
+  core: ['core'],
   cardio: ['cardiovascular'],
-  other: ['custom'],
 };
 
 export interface ExercisePickerModalProps {
@@ -158,7 +153,7 @@ export function ExercisePickerModal({
   const [formNameHu, setFormNameHu] = useState('');
   const [formNameEn, setFormNameEn] = useState('');
   const [formEquipment, setFormEquipment] = useState<EquipmentFilter>('barbell');
-  const [formGroup, setFormGroup] = useState<MuscleGroup>('other');
+  const [formGroup, setFormGroup] = useState<MuscleGroup>('chest');
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -178,7 +173,7 @@ export function ExercisePickerModal({
     setFormNameHu('');
     setFormNameEn('');
     setFormEquipment('barbell');
-    setFormGroup('other');
+    setFormGroup('chest');
     setFormError(null);
   };
 
