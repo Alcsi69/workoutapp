@@ -1,6 +1,6 @@
 # Core TypeScript Interfaces (`src/types/workout.ts`)
 
-Schema v4. All unions and literal types below are mirrored 1:1 by `src/types/workout.ts`;
+Schema v5. All unions and literal types below are mirrored 1:1 by `src/types/workout.ts`;
 the SQLite row shapes (snake_case) live in `src/db/schema.ts`.
 
 ## Enums & unions
@@ -15,6 +15,13 @@ export type SessionType = 'strength' | 'running' | 'hybrid';
 export type SyncStatus = 'local_dirty' | 'synced';
 export type ExerciseCategory = 'compound_lower' | 'compound_upper' | 'isolation' | 'machine' | 'cardio_run';
 export type LoadScore = 1 | 2 | 3 | 4 | 5;
+
+/** Where a template came from — added in schema v5. */
+export type TemplateSource = 'seed' | 'custom' | 'coach';
+
+/** 1-on-1 coaching modality / status — added in schema v5. */
+export type CoachingModality = 'online_call' | 'irl_gym';
+export type CoachingBookingStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
 
 /** Training implement — added in schema v4. */
 export type Equipment =
@@ -159,10 +166,14 @@ export interface WorkoutTemplate {
   title: string;
   sessionType: SessionType;
   goal?: TrainingGoal;
+  source: TemplateSource;   // 'seed' | 'custom' | 'coach' (v5)
+  coachNote?: string;       // coach's note shown as a badge (v5)
+  assignedAt?: string;      // ISO-8601 assignment timestamp (v5)
   createdAt: string;
   exercises: WorkoutTemplateExercise[];
 }
 
+/** Session-only sync batch (kept for the on-device preview / dry-run export). */
 export interface SyncBatchPayload {
   batchId: string;
   generatedAt: string;   // ISO-8601
@@ -255,3 +266,89 @@ export interface DatabaseSnapshot {
 export function exportFullDatabaseSnapshot(db: SQLiteDatabase): Promise<string>;
 export function importFullDatabaseSnapshot(db: SQLiteDatabase, jsonString: string): Promise<ImportSummary>;
 ```
+
+## Human Coach platform (Phase 7A / schema v5)
+
+```typescript
+// --- Client contact & Hungarian billing/invoicing --------------------------
+export interface ClientBillingProfile {
+  userId: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  billingName: string;       // magánszemély vagy cégnév
+  billingCountry: string;    // defaults to 'Magyarország'
+  billingZip: string;        // irányítószám
+  billingCity: string;       // település
+  billingAddress: string;    // utca, házszám
+  taxNumber?: string;        // adószám (opcionális)
+  updatedAt: string;         // ISO-8601
+}
+export type ClientBillingProfileInput = Omit<ClientBillingProfile, 'updatedAt'>;
+export const DEFAULT_BILLING_COUNTRY = 'Magyarország';
+
+// src/services/billing.ts — pure validation + form helpers.
+export type BillingFieldKey =
+  | 'fullName' | 'email' | 'phone' | 'billingName'
+  | 'billingCountry' | 'billingZip' | 'billingCity' | 'billingAddress';
+export const REQUIRED_BILLING_FIELDS: readonly BillingFieldKey[];
+export interface BillingValidationResult {
+  valid: boolean;
+  missingFields: BillingFieldKey[];
+  invalidEmail: boolean;
+}
+export function validateClientBillingProfile(input: ClientBillingProfileInput): BillingValidationResult;
+export function isValidEmail(email: string): boolean;
+export function createEmptyBillingInput(userId: string): ClientBillingProfileInput;
+export function resolveBillingName(fullName: string, sameAsFullName: boolean, billingName: string): string;
+
+// --- 1-on-1 coaching bookings ----------------------------------------------
+export interface CoachingSlot {
+  id: string;
+  startsAt: string;          // ISO-8601
+  endsAt: string;            // ISO-8601
+  modality: CoachingModality;
+  locationOrLink: string;    // video link (online) or gym address (IRL)
+  isBooked: boolean;
+}
+
+export interface CoachingBooking {
+  id: string;
+  slotId: string;
+  userId: string;
+  modality: CoachingModality;
+  startsAt: string;          // ISO-8601
+  endsAt: string;            // ISO-8601
+  locationOrLink: string;
+  clientNotes?: string;      // "Megjegyzés az edzőnek"
+  coachNotes?: string;
+  status: CoachingBookingStatus;
+  syncStatus: SyncStatus;
+  createdAt: string;         // ISO-8601
+}
+
+// --- Coach sync contracts (replace the old AI request payload) -------------
+/** Client -> coach backend ("what has my coach assigned me?"). */
+export interface ClientSyncPullPayload {
+  syncId: string;
+  generatedAt: string;
+  locale: OnboardingPayload['locale'];
+  profile: OnboardingPayload;
+  billingProfile: ClientBillingProfile | null;
+  catalog: ExerciseCatalogItem[];
+}
+
+/** Coach backend -> client ("here is my locally-changed state"). */
+export interface ClientSyncPushPayload {
+  batchId: string;
+  generatedAt: string;
+  deviceId: string;
+  sessions: WorkoutSessionLog[];
+  bookings: CoachingBooking[];
+}
+```
+
+Repository helpers (`src/db/repository.ts`): `getClientBillingProfile` / `saveClientBillingProfile`,
+`assignCoachTemplate` / `getCoachAssignedTemplates`, `seedCoachingSlots` / `getOpenCoachingSlots`,
+`createCoachingBooking` / `getCoachingBookings` / `cancelCoachingBooking`, and
+`getDirtyCoachingBookings` / `markCoachingBookingsSynced` for the offline queue.

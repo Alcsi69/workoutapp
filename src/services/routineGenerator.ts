@@ -1,4 +1,4 @@
-// Phase 4 — personalized routine generation.
+// Phase 4 — personalized routine generation + coach sync payloads.
 //
 // Two responsibilities, both driven purely by the persisted OnboardingPayload:
 //
@@ -7,14 +7,15 @@
 //      sessionDurationMinutes, prescribes loads from primaryGoal, then runs the
 //      joint/substitution engine so hip/knee/back-hostile lifts are swapped for
 //      the user's preferred or joint-friendliest alternatives.
-//   2. buildAiProgramRequestPayload(db) serializes the request body (matching
-//      /docs/SAMPLE_PAYLOADS.json) ready to POST to an external LLM/backend.
+//   2. buildClientSyncPullPayload(db) serializes the request body a client sends
+//      to the coach backend ("what has my coach assigned me?"), matching
+//      /docs/SAMPLE_PAYLOADS.json.
 //
 // No React, no fetch: this module only reads/writes through the repository.
 
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type {
-  AiProgramRequestPayload,
+  ClientSyncPullPayload,
   ExerciseCatalogItem,
   JointArea,
   JointConstraint,
@@ -28,6 +29,7 @@ import type {
 import type { TemplateProgramSeed } from '../db/repository';
 import {
   deleteTemplatesByIds,
+  getClientBillingProfile,
   getExerciseCatalog,
   getUserProfile,
   getWorkoutTemplates,
@@ -882,22 +884,28 @@ function toOnboardingPayload(profile: UserProfile): OnboardingPayload {
 }
 
 /**
- * Builds the JSON body to POST to the external routine-generation endpoint.
- * Shape matches `aiProgramRequestExample` in /docs/SAMPLE_PAYLOADS.json.
+ * Builds the JSON body a client sends to the coach backend on pull: the profile
+ * (with bookkeeping columns stripped), the client's billing profile, and the
+ * exercise vocabulary coach-assigned plans may reference. Shape matches
+ * `clientSyncPullExample` in /docs/SAMPLE_PAYLOADS.json.
  */
-export async function buildAiProgramRequestPayload(
+export async function buildClientSyncPullPayload(
   db: SQLiteDatabase,
-): Promise<AiProgramRequestPayload> {
+): Promise<ClientSyncPullPayload> {
   const profile = await getUserProfile(db);
   if (profile === null) {
     throw new Error('Nincs mentett profil — előbb töltsd ki az onboardingot.');
   }
-  const catalog = await getExerciseCatalog(db);
+  const [catalog, billingProfile] = await Promise.all([
+    getExerciseCatalog(db),
+    getClientBillingProfile(db),
+  ]);
   return {
-    requestId: createId('ai_req'),
+    syncId: createId('sync_pull'),
     generatedAt: new Date().toISOString(),
     locale: profile.locale,
     profile: toOnboardingPayload(profile),
+    billingProfile,
     catalog,
   };
 }

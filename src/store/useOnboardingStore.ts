@@ -4,6 +4,8 @@
 
 import { create } from 'zustand';
 import type {
+  ClientBillingProfile,
+  ClientBillingProfileInput,
   EquipmentTier,
   JointArea,
   JointConstraint,
@@ -12,10 +14,12 @@ import type {
   TrainingGoal,
   UserProfile,
 } from '../types/workout';
+import { DEFAULT_BILLING_COUNTRY } from '../types/workout';
+import { resolveBillingName } from '../services/billing';
 
-export type OnboardingStep = 1 | 2 | 3;
+export type OnboardingStep = 1 | 2 | 3 | 4;
 
-export const ONBOARDING_STEPS: readonly OnboardingStep[] = [1, 2, 3];
+export const ONBOARDING_STEPS: readonly OnboardingStep[] = [1, 2, 3, 4];
 
 /** Substitutions implied by a joint constraint (no manual input required). */
 const AUTO_SUBSTITUTIONS_BY_AREA: Partial<Record<JointArea, Record<string, string>>> = {
@@ -91,6 +95,18 @@ export interface OnboardingDraft {
   jointLimitations: JointConstraint[];
   manualSubstitutions: Record<string, string>;
   excludedExerciseIds: string[];
+  // Step 4 — Kapcsolat & Számlázási adatok
+  fullName: string;
+  email: string;
+  phone: string;
+  /** "Számlázási név megegyezik a teljes névvel". */
+  billingSameAsFullName: boolean;
+  billingName: string;
+  billingCountry: string;
+  billingZip: string;
+  billingCity: string;
+  billingAddress: string;
+  taxNumber: string;
 }
 
 interface OnboardingActions {
@@ -117,8 +133,27 @@ interface OnboardingActions {
   removeJointConstraint: (area: JointArea) => void;
   setSubstitution: (fromExerciseId: string, toExerciseId: string) => void;
   clearSubstitution: (fromExerciseId: string) => void;
+  /** Step 4 — contact fields. */
+  updateContact: (patch: Partial<Pick<OnboardingDraft, 'fullName' | 'email' | 'phone'>>) => void;
+  /** Step 4 — billing fields. */
+  updateBilling: (
+    patch: Partial<
+      Pick<
+        OnboardingDraft,
+        | 'billingSameAsFullName'
+        | 'billingName'
+        | 'billingCountry'
+        | 'billingZip'
+        | 'billingCity'
+        | 'billingAddress'
+        | 'taxNumber'
+      >
+    >,
+  ) => void;
   /** Loads an existing profile into the draft so re-onboarding is prefilled. */
   hydrateFromProfile: (profile: UserProfile) => void;
+  /** Prefills the billing step from a saved billing profile. */
+  hydrateBillingFromProfile: (profile: ClientBillingProfile) => void;
   reset: () => void;
 }
 
@@ -139,6 +174,16 @@ const INITIAL_DRAFT: OnboardingDraft = {
   jointLimitations: [],
   manualSubstitutions: {},
   excludedExerciseIds: [],
+  fullName: '',
+  email: '',
+  phone: '',
+  billingSameAsFullName: true,
+  billingName: '',
+  billingCountry: DEFAULT_BILLING_COUNTRY,
+  billingZip: '',
+  billingCity: '',
+  billingAddress: '',
+  taxNumber: '',
 };
 
 export const useOnboardingStore = create<OnboardingStore>((set) => ({
@@ -148,7 +193,7 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
     set({ step });
   },
   nextStep: () => {
-    set((state) => ({ step: Math.min(3, state.step + 1) as OnboardingStep }));
+    set((state) => ({ step: Math.min(4, state.step + 1) as OnboardingStep }));
   },
   previousStep: () => {
     set((state) => ({ step: Math.max(1, state.step - 1) as OnboardingStep }));
@@ -196,6 +241,13 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
     });
   },
 
+  updateContact: (patch) => {
+    set(patch);
+  },
+  updateBilling: (patch) => {
+    set(patch);
+  },
+
   hydrateFromProfile: (profile) => {
     set({
       step: 1,
@@ -212,6 +264,22 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
       jointLimitations: profile.constraints.jointLimitations,
       manualSubstitutions: profile.constraints.preferredSubstitutions,
       excludedExerciseIds: profile.constraints.excludedExerciseIds,
+    });
+  },
+
+  hydrateBillingFromProfile: (profile) => {
+    set({
+      fullName: profile.fullName,
+      email: profile.email,
+      phone: profile.phone,
+      // The toggle defaults on; keep it unless the stored billing name differs.
+      billingSameAsFullName: profile.billingName === profile.fullName,
+      billingName: profile.billingName,
+      billingCountry: profile.billingCountry,
+      billingZip: profile.billingZip,
+      billingCity: profile.billingCity,
+      billingAddress: profile.billingAddress,
+      taxNumber: profile.taxNumber ?? '',
     });
   },
 
@@ -259,4 +327,35 @@ export function buildOnboardingPayload(
   }
 
   return payload;
+}
+
+/**
+ * Converts the contact & billing draft into the exact record the DB layer
+ * persists. The billing name follows the "same as full name" toggle and the
+ * country falls back to the default; `taxNumber` is omitted when blank.
+ */
+export function buildBillingProfileInput(
+  draft: OnboardingDraft,
+  userId: string,
+): ClientBillingProfileInput {
+  const input: ClientBillingProfileInput = {
+    userId,
+    fullName: draft.fullName.trim(),
+    email: draft.email.trim(),
+    phone: draft.phone.trim(),
+    billingName: resolveBillingName(
+      draft.fullName.trim(),
+      draft.billingSameAsFullName,
+      draft.billingName.trim(),
+    ),
+    billingCountry: draft.billingCountry.trim() || DEFAULT_BILLING_COUNTRY,
+    billingZip: draft.billingZip.trim(),
+    billingCity: draft.billingCity.trim(),
+    billingAddress: draft.billingAddress.trim(),
+  };
+  const taxNumber = draft.taxNumber.trim();
+  if (taxNumber.length > 0) {
+    input.taxNumber = taxNumber;
+  }
+  return input;
 }

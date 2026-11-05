@@ -52,6 +52,19 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="booking"
+        options={{
+          title: hu.tabs.booking,
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons
+              name={focused ? 'calendar' : 'calendar-outline'}
+              size={size}
+              color={iconColor(color)}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="history"
         options={{
           title: hu.tabs.history,

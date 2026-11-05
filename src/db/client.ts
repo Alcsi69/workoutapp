@@ -6,7 +6,7 @@ import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrate } from './schema';
 import { seedExerciseCatalog } from './seed';
-import { getUserProfile, seedDefaultTemplates } from './repository';
+import { getUserProfile, seedCoachingSlots, seedDefaultTemplates } from './repository';
 import { generateProgramFromProfile } from '../services/routineGenerator';
 
 export const DATABASE_NAME = 'workout.db';
@@ -29,6 +29,7 @@ export function getDatabase(): Promise<SQLiteDatabase> {
       const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
       await migrate(db);
       await seedExerciseCatalog(db);
+      await seedCoachingSlots(db);
       const profile = await getUserProfile(db);
       if (profile === null) {
         await seedDefaultTemplates(db);

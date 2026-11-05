@@ -6,13 +6,23 @@ import { Screen } from '../../components/Screen';
 import { StepBiometrics } from '../../components/onboarding/StepBiometrics';
 import { StepSchedule } from '../../components/onboarding/StepSchedule';
 import { StepConstraints } from '../../components/onboarding/StepConstraints';
+import { StepContact } from '../../components/onboarding/StepContact';
 import {
+  buildBillingProfileInput,
   buildOnboardingPayload,
   useOnboardingStore,
 } from '../../store/useOnboardingStore';
 import type { OnboardingStep } from '../../store/useOnboardingStore';
 import { getDatabase } from '../../db/client';
-import { getUserProfile, saveOnboardingPayload, USER_PROFILE_ID } from '../../db/repository';
+import {
+  getClientBillingProfile,
+  getUserProfile,
+  saveClientBillingProfile,
+  saveOnboardingPayload,
+  USER_PROFILE_ID,
+} from '../../db/repository';
+import { validateClientBillingProfile } from '../../services/billing';
+import { describeBillingErrors } from '../../services/billingMessages';
 import { generateProgramFromProfile } from '../../services/routineGenerator';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
@@ -21,20 +31,24 @@ const STEP_TITLES: Record<OnboardingStep, string> = {
   1: hu.onboarding.steps.step1,
   2: hu.onboarding.steps.step2,
   3: hu.onboarding.steps.step3,
+  4: hu.onboarding.steps.step4,
 };
+
+const STEP_COUNT = 4;
 
 export default function OnboardingScreen() {
   const step = useOnboardingStore((state) => state.step);
   const nextStep = useOnboardingStore((state) => state.nextStep);
   const previousStep = useOnboardingStore((state) => state.previousStep);
   const hydrateFromProfile = useOnboardingStore((state) => state.hydrateFromProfile);
+  const hydrateBillingFromProfile = useOnboardingStore((state) => state.hydrateBillingFromProfile);
 
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const hydrated = useRef<boolean>(false);
 
   // Prefill from the saved profile so "Onboarding újraindítása" edits the
-  // existing plan instead of starting from scratch.
+  // existing plan (and billing record) instead of starting from scratch.
   useEffect(() => {
     if (hydrated.current) {
       return;
@@ -42,10 +56,22 @@ export default function OnboardingScreen() {
     let cancelled = false;
 
     getDatabase()
-      .then((db) => getUserProfile(db))
-      .then((profile) => {
-        if (!cancelled && profile !== null) {
+      .then(async (db) => {
+        const [profile, billing] = await Promise.all([
+          getUserProfile(db),
+          getClientBillingProfile(db),
+        ]);
+        return { profile, billing };
+      })
+      .then(({ profile, billing }) => {
+        if (cancelled) {
+          return;
+        }
+        if (profile !== null) {
           hydrateFromProfile(profile);
+        }
+        if (billing !== null) {
+          hydrateBillingFromProfile(billing);
         }
       })
       .catch(() => {
@@ -58,15 +84,27 @@ export default function OnboardingScreen() {
     return () => {
       cancelled = true;
     };
-  }, [hydrateFromProfile]);
+  }, [hydrateFromProfile, hydrateBillingFromProfile]);
 
   const finish = async (): Promise<void> => {
     setSaving(true);
     setError(null);
     try {
       const db = await getDatabase();
-      const payload = buildOnboardingPayload(useOnboardingStore.getState(), USER_PROFILE_ID);
+      const draft = useOnboardingStore.getState();
+
+      // Required contact/billing fields must validate before anything persists.
+      const billingInput = buildBillingProfileInput(draft, USER_PROFILE_ID);
+      const validation = validateClientBillingProfile(billingInput);
+      if (!validation.valid) {
+        setError(describeBillingErrors(validation));
+        setSaving(false);
+        return;
+      }
+
+      const payload = buildOnboardingPayload(draft, USER_PROFILE_ID);
       await saveOnboardingPayload(db, payload);
+      await saveClientBillingProfile(db, billingInput);
       // Build the tailored program immediately so the tabs show the real plan.
       await generateProgramFromProfile(db);
       useOnboardingStore.getState().reset();
@@ -77,7 +115,7 @@ export default function OnboardingScreen() {
     }
   };
 
-  const isLastStep = step === 3;
+  const isLastStep = step === STEP_COUNT;
 
   const footer = (
     <View style={styles.footer}>
@@ -117,9 +155,9 @@ export default function OnboardingScreen() {
       <View
         style={styles.progress}
         accessibilityRole="progressbar"
-        accessibilityValue={{ min: 1, max: 3, now: step }}
+        accessibilityValue={{ min: 1, max: STEP_COUNT, now: step }}
       >
-        {[1, 2, 3].map((index) => (
+        {[1, 2, 3, 4].map((index) => (
           <View
             key={index}
             style={[styles.progressSegment, index <= step ? styles.progressSegmentActive : null]}
@@ -127,12 +165,13 @@ export default function OnboardingScreen() {
         ))}
       </View>
       <Text style={styles.progressLabel}>
-        {step} / 3 {hu.onboarding.steps.progressLabel}
+        {step} / {STEP_COUNT} {hu.onboarding.steps.progressLabel}
       </Text>
 
       {step === 1 ? <StepBiometrics /> : null}
       {step === 2 ? <StepSchedule /> : null}
       {step === 3 ? <StepConstraints /> : null}
+      {step === 4 ? <StepContact /> : null}
     </Screen>
   );
 }

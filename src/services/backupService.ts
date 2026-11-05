@@ -16,6 +16,9 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { SCHEMA_VERSION } from '../db/schema';
 import type {
+  ClientBillingProfileRow,
+  CoachingBookingRow,
+  CoachingSlotRow,
   ExerciseCatalogRow,
   JointConstraintRow,
   RunningMetricsRow,
@@ -41,6 +44,10 @@ export interface DatabaseSnapshotData {
   sessionExerciseBlocks: SessionExerciseBlockRow[];
   setLogs: SetLogRow[];
   runningMetrics: RunningMetricsRow[];
+  /** Phase 7A — client contact & billing, plus coaching slots/bookings. */
+  clientBillingProfile: ClientBillingProfileRow | null;
+  coachingSlots: CoachingSlotRow[];
+  coachingBookings: CoachingBookingRow[];
 }
 
 export interface DatabaseSnapshot {
@@ -62,6 +69,9 @@ export interface ImportSummary {
   sessionExerciseBlocks: number;
   setLogs: number;
   runningMetrics: number;
+  clientBillingProfile: boolean;
+  coachingSlots: number;
+  coachingBookings: number;
 }
 
 // --- Export -----------------------------------------------------------------
@@ -89,7 +99,7 @@ const SELECT_CUSTOM_EXERCISES_SQL = `
 `;
 
 const SELECT_CUSTOM_TEMPLATES_SQL = `
-  SELECT id, title, session_type, goal, created_at
+  SELECT id, title, session_type, goal, source, coach_note, assigned_at, created_at
   FROM workout_templates
   WHERE id LIKE 'tpl_user%'
   ORDER BY created_at, id;
@@ -131,6 +141,27 @@ const SELECT_RUNNING_METRICS_SQL = `
   ORDER BY session_id;
 `;
 
+const SELECT_BILLING_PROFILE_SQL = `
+  SELECT id, full_name, email, phone, billing_name, billing_country,
+         billing_zip, billing_city, billing_address, tax_number,
+         created_at, updated_at
+  FROM client_billing_profiles
+  LIMIT 1;
+`;
+
+const SELECT_COACHING_SLOTS_SQL = `
+  SELECT id, starts_at, ends_at, modality, location_or_link, is_booked
+  FROM coaching_slots
+  ORDER BY starts_at;
+`;
+
+const SELECT_COACHING_BOOKINGS_SQL = `
+  SELECT id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+         client_notes, coach_notes, status, sync_status, created_at
+  FROM coaching_bookings
+  ORDER BY starts_at;
+`;
+
 /** Reads the whole local database into a typed snapshot object. */
 export async function buildFullDatabaseSnapshot(db: SQLiteDatabase): Promise<DatabaseSnapshot> {
   const profile = await db.getFirstAsync<UserProfileRow>(SELECT_PROFILE_ROW_SQL);
@@ -144,6 +175,9 @@ export async function buildFullDatabaseSnapshot(db: SQLiteDatabase): Promise<Dat
     sessionExerciseBlocks,
     setLogs,
     runningMetrics,
+    clientBillingProfile,
+    coachingSlots,
+    coachingBookings,
   ] = await Promise.all([
     db.getAllAsync<JointConstraintRow>(SELECT_JOINT_CONSTRAINTS_SQL),
     db.getAllAsync<ExerciseCatalogRow>(SELECT_CUSTOM_EXERCISES_SQL),
@@ -153,6 +187,9 @@ export async function buildFullDatabaseSnapshot(db: SQLiteDatabase): Promise<Dat
     db.getAllAsync<SessionExerciseBlockRow>(SELECT_SESSION_BLOCKS_SQL),
     db.getAllAsync<SetLogRow>(SELECT_SET_LOGS_SQL),
     db.getAllAsync<RunningMetricsRow>(SELECT_RUNNING_METRICS_SQL),
+    db.getFirstAsync<ClientBillingProfileRow>(SELECT_BILLING_PROFILE_SQL),
+    db.getAllAsync<CoachingSlotRow>(SELECT_COACHING_SLOTS_SQL),
+    db.getAllAsync<CoachingBookingRow>(SELECT_COACHING_BOOKINGS_SQL),
   ]);
 
   return {
@@ -170,6 +207,9 @@ export async function buildFullDatabaseSnapshot(db: SQLiteDatabase): Promise<Dat
       sessionExerciseBlocks,
       setLogs,
       runningMetrics,
+      clientBillingProfile,
+      coachingSlots,
+      coachingBookings,
     },
   };
 }
@@ -232,6 +272,9 @@ export function parseFullDatabaseSnapshot(jsonString: string): DatabaseSnapshot 
       sessionExerciseBlocks: asArray<SessionExerciseBlockRow>(data.sessionExerciseBlocks),
       setLogs: asArray<SetLogRow>(data.setLogs),
       runningMetrics: asArray<RunningMetricsRow>(data.runningMetrics),
+      clientBillingProfile: data.clientBillingProfile ?? null,
+      coachingSlots: asArray<CoachingSlotRow>(data.coachingSlots),
+      coachingBookings: asArray<CoachingBookingRow>(data.coachingBookings),
     },
   };
 }
@@ -258,8 +301,9 @@ const INSERT_CUSTOM_EXERCISE_SQL = `
 `;
 
 const INSERT_TEMPLATE_SQL = `
-  INSERT INTO workout_templates (id, title, session_type, goal, created_at)
-  VALUES (?, ?, ?, ?, ?);
+  INSERT INTO workout_templates
+    (id, title, session_type, goal, source, coach_note, assigned_at, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 `;
 
 const INSERT_TEMPLATE_BLOCK_SQL = `
@@ -295,6 +339,26 @@ const INSERT_RUNNING_METRICS_SQL = `
   VALUES (?, ?, ?, ?, ?);
 `;
 
+const INSERT_BILLING_PROFILE_SQL = `
+  INSERT INTO client_billing_profiles
+    (id, full_name, email, phone, billing_name, billing_country,
+     billing_zip, billing_city, billing_address, tax_number, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`;
+
+const INSERT_COACHING_SLOT_SQL = `
+  INSERT INTO coaching_slots
+    (id, starts_at, ends_at, modality, location_or_link, is_booked)
+  VALUES (?, ?, ?, ?, ?, ?);
+`;
+
+const INSERT_COACHING_BOOKING_SQL = `
+  INSERT INTO coaching_bookings
+    (id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+     client_notes, coach_notes, status, sync_status, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`;
+
 /**
  * Restores a snapshot produced by `exportFullDatabaseSnapshot` (or the object
  * form). The covered domains are wiped and rewritten inside a single transaction,
@@ -316,6 +380,9 @@ export async function importFullDatabaseSnapshot(
     sessionExerciseBlocks: data.sessionExerciseBlocks.length,
     setLogs: data.setLogs.length,
     runningMetrics: data.runningMetrics.length,
+    clientBillingProfile: data.clientBillingProfile !== null,
+    coachingSlots: data.coachingSlots.length,
+    coachingBookings: data.coachingBookings.length,
   };
 
   await db.withTransactionAsync(async () => {
@@ -324,6 +391,9 @@ export async function importFullDatabaseSnapshot(
     await db.runAsync('DELETE FROM running_metrics;');
     await db.runAsync('DELETE FROM session_exercise_blocks;');
     await db.runAsync('DELETE FROM session_logs;');
+    await db.runAsync('DELETE FROM coaching_bookings;');
+    await db.runAsync('DELETE FROM coaching_slots;');
+    await db.runAsync('DELETE FROM client_billing_profiles;');
     await db.runAsync("DELETE FROM template_exercise_blocks WHERE template_id LIKE 'tpl_user%';");
     await db.runAsync("DELETE FROM workout_templates WHERE id LIKE 'tpl_user%';");
     await db.runAsync('DELETE FROM exercise_catalog WHERE is_custom = 1;');
@@ -388,6 +458,9 @@ export async function importFullDatabaseSnapshot(
         template.title,
         template.session_type,
         template.goal,
+        template.source ?? 'custom',
+        template.coach_note ?? null,
+        template.assigned_at ?? null,
         template.created_at,
       );
     }
@@ -455,6 +528,55 @@ export async function importFullDatabaseSnapshot(
         metrics.duration_seconds,
         metrics.avg_pace_seconds_per_km,
         metrics.perceived_effort_rpe,
+      );
+    }
+
+    const billing = data.clientBillingProfile;
+    if (billing !== null) {
+      await db.runAsync(
+        INSERT_BILLING_PROFILE_SQL,
+        billing.id,
+        billing.full_name,
+        billing.email,
+        billing.phone,
+        billing.billing_name,
+        billing.billing_country,
+        billing.billing_zip,
+        billing.billing_city,
+        billing.billing_address,
+        billing.tax_number,
+        billing.created_at,
+        billing.updated_at,
+      );
+    }
+
+    // Slots before bookings (bookings carry a slot FK).
+    for (const slot of data.coachingSlots) {
+      await db.runAsync(
+        INSERT_COACHING_SLOT_SQL,
+        slot.id,
+        slot.starts_at,
+        slot.ends_at,
+        slot.modality,
+        slot.location_or_link,
+        slot.is_booked,
+      );
+    }
+    for (const booking of data.coachingBookings) {
+      await db.runAsync(
+        INSERT_COACHING_BOOKING_SQL,
+        booking.id,
+        booking.slot_id,
+        booking.user_id,
+        booking.modality,
+        booking.starts_at,
+        booking.ends_at,
+        booking.location_or_link,
+        booking.client_notes,
+        booking.coach_notes,
+        booking.status,
+        booking.sync_status,
+        booking.created_at,
       );
     }
   });

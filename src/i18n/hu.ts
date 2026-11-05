@@ -4,6 +4,8 @@
 // are cross-checked with `satisfies` so a new union member forces a translation.
 
 import type {
+  CoachingBookingStatus,
+  CoachingModality,
   EquipmentTier,
   JointArea,
   JointConstraintSeverity,
@@ -12,6 +14,7 @@ import type {
   SetType,
   TrainingGoal,
 } from '../types/workout';
+import type { BillingFieldKey } from '../services/billing';
 
 const hu = {
   app: {
@@ -21,6 +24,7 @@ const hu = {
   tabs: {
     workout: 'Edzés',
     templates: 'Sablonok',
+    booking: 'Időpontok',
     history: 'Előzmények',
     profile: 'Profil',
   },
@@ -41,6 +45,22 @@ const hu = {
     km: 'km',
   },
 
+  validation: {
+    required: 'Kötelező mező.',
+    invalidEmail: 'Adj meg egy érvényes email címet.',
+  },
+
+  billingFields: {
+    fullName: 'Teljes név',
+    email: 'Email cím',
+    phone: 'Telefonszám',
+    billingName: 'Számlázási név',
+    billingCountry: 'Ország',
+    billingZip: 'Irányítószám',
+    billingCity: 'Település',
+    billingAddress: 'Utca, házszám',
+  },
+
   onboarding: {
     welcome: {
       title: 'Üdv a WorkoutAppban',
@@ -51,6 +71,7 @@ const hu = {
       step1: 'Testalkat & Célok',
       step2: 'Heti beosztás',
       step3: 'Ízületi korlátok & Gyakorlat cserék',
+      step4: 'Kapcsolat & Számlázási adatok',
       progressLabel: 'lépés',
       finish: 'Terv mentése',
       saving: 'Mentés…',
@@ -123,6 +144,33 @@ const hu = {
       monthsUnit: 'hónap',
       invalidNumber: 'Adj meg egy érvényes értéket.',
     },
+    contact: {
+      title: 'Kapcsolat',
+      subtitle: 'Így tud kapcsolatba lépni veled az edződ.',
+      fullName: 'Teljes név',
+      fullNamePlaceholder: 'pl. Kovács Anna',
+      email: 'Email cím',
+      emailPlaceholder: 'pl. anna@example.com',
+      phone: 'Telefonszám',
+      phonePlaceholder: 'pl. +36 30 123 4567',
+    },
+    billing: {
+      title: 'Számlázás',
+      subtitle: 'A számlák kiállításához szükséges adatok.',
+      sameAsFullName: 'Számlázási név megegyezik a teljes névvel',
+      billingName: 'Számlázási név',
+      billingNamePlaceholder: 'pl. Kovács Anna / Példa Kft.',
+      country: 'Ország',
+      zip: 'Irányítószám',
+      zipPlaceholder: 'pl. 1052',
+      city: 'Település',
+      cityPlaceholder: 'pl. Budapest',
+      address: 'Utca, házszám',
+      addressPlaceholder: 'pl. Váci utca 12.',
+      taxNumber: 'Adószám (opcionális)',
+      taxNumberPlaceholder: 'pl. 12345678-1-42',
+      taxNumberHint: 'Céges számlához add meg az adószámot.',
+    },
   },
 
   screens: {
@@ -142,10 +190,13 @@ const hu = {
       blocksLabel: 'gyakorlat',
     },
     templates: {
-      subtitle: 'Profilod alapján generált erő- és futóterv — a korlátokhoz igazítva.',
+      subtitle: 'A te edzésterved és az edződ által kijelölt tervek.',
       strengthGroup: 'Erőedzések',
       runningGroup: 'Futóedzések',
       customGroup: 'Saját sablonok',
+      coachGroup: 'Edző által kijelölt tervek',
+      ownGroup: 'Saját / Alap sablonok',
+      coachNoteBadge: 'Edzői megjegyzés',
       exerciseCount: 'gyakorlat',
       setsShort: 'sorozat',
       restShort: 'pihenő',
@@ -208,6 +259,34 @@ const hu = {
         },
       },
     },
+    booking: {
+      subtitle: 'Foglalj időpontot 1:1 edzői konzultációra vagy személyi edzésre.',
+      filterAll: 'Összes',
+      filterOnline: 'Online hívás',
+      filterIrl: 'Személyi edzés (IRL)',
+      openSlots: 'Szabad időpontok',
+      myBookings: 'Foglalásaim',
+      upcoming: 'Közelgő',
+      past: 'Korábbi',
+      noOpenSlots: 'Jelenleg nincs szabad időpont.',
+      noBookings: 'Még nincs foglalásod.',
+      book: 'Foglalás',
+      bookTitle: 'Időpont foglalása',
+      clientNotesLabel: 'Megjegyzés az edzőnek',
+      clientNotesPlaceholder: 'pl. Szeretném átnézni a guggolás technikámat.',
+      confirmBooking: 'Foglalás megerősítése',
+      cancelBooking: 'Foglalás lemondása',
+      cancelConfirm: 'Biztosan lemondod ezt a foglalást?',
+      booked: 'Sikeres foglalás.',
+      cancelled: 'A foglalás lemondva.',
+      location: 'Helyszín / link',
+      coachNotes: 'Edzői megjegyzés',
+      yourNotes: 'Megjegyzésed',
+      durationLabel: 'Hossz',
+      startLabel: 'Időpont',
+      minutesUnit: 'perc',
+      close: 'Bezárás',
+    },
     profile: {
       title: 'Profil',
       biometrics: 'Testalkat',
@@ -228,6 +307,13 @@ const hu = {
       missingHint: 'Töltsd ki az onboardingot az edzéstervedhez.',
       startOnboarding: 'Onboarding indítása',
       ageUnit: 'év',
+      contact: 'Kapcsolat',
+      billing: 'Számlázás',
+      contactBilling: 'Kapcsolat & Számlázási adatok',
+      contactBillingHint: 'A számlázási adatokat az edződ használja a számlák kiállításához.',
+      edit: 'Szerkesztés',
+      noBilling: 'Nincs megadott számlázási adat.',
+      addBilling: 'Számlázási adatok megadása',
     },
     load: {
       axialShort: 'Tengely',
@@ -250,6 +336,18 @@ const hu = {
     strength: 'Erő',
     running: 'Futás',
     hybrid: 'Hibrid',
+  },
+
+  modalities: {
+    online_call: 'Online konzultáció',
+    irl_gym: 'Személyi edzés (IRL)',
+  },
+
+  bookingStatuses: {
+    pending: 'Függőben',
+    confirmed: 'Visszaigazolva',
+    completed: 'Lezajlott',
+    cancelled: 'Lemondva',
   },
 
   logger: {
@@ -453,6 +551,9 @@ const _goals: Record<TrainingGoal, string> = hu.onboarding.goals;
 const _equipment: Record<EquipmentTier, string> = hu.onboarding.equipment;
 const _hintReasons: Record<OverloadHintReason, string> = hu.logger.hintReasons;
 const _runningTrends: Record<RunningTrend, string> = hu.screens.history.progress.trends;
+const _modalities: Record<CoachingModality, string> = hu.modalities;
+const _bookingStatuses: Record<CoachingBookingStatus, string> = hu.bookingStatuses;
+const _billingFields: Record<BillingFieldKey, string> = hu.billingFields;
 
 export type HuDictionary = typeof hu;
 

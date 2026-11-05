@@ -14,8 +14,13 @@ import { Card } from '../../components/Card';
 import { Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
 import { SyncCard } from '../../components/SyncCard';
+import { BillingCard } from '../../components/profile/BillingCard';
 import { getDatabase } from '../../db/client';
-import { getExerciseCatalog, getUserProfile } from '../../db/repository';
+import {
+  getClientBillingProfile,
+  getExerciseCatalog,
+  getUserProfile,
+} from '../../db/repository';
 import {
   exportFullDatabaseSnapshot,
   importFullDatabaseSnapshot,
@@ -23,10 +28,11 @@ import {
 import { formatDateHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
-import type { JointConstraintSeverity, UserProfile } from '../../types/workout';
+import type { ClientBillingProfile, JointConstraintSeverity, UserProfile } from '../../types/workout';
 
 interface ProfileData {
   profile: UserProfile | null;
+  billing: ClientBillingProfile | null;
   exerciseNames: Record<string, string>;
 }
 
@@ -149,12 +155,16 @@ export default function ProfileScreen() {
   const load = useCallback(async (): Promise<void> => {
     try {
       const db = await getDatabase();
-      const [profile, catalog] = await Promise.all([getUserProfile(db), getExerciseCatalog(db)]);
+      const [profile, billing, catalog] = await Promise.all([
+        getUserProfile(db),
+        getClientBillingProfile(db),
+        getExerciseCatalog(db),
+      ]);
       const exerciseNames: Record<string, string> = {};
       for (const item of catalog) {
         exerciseNames[item.id] = item.nameHu;
       }
-      setData({ profile, exerciseNames });
+      setData({ profile, billing, exerciseNames });
       setError(null);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -179,7 +189,7 @@ export default function ProfileScreen() {
     );
   }
 
-  const { profile, exerciseNames } = data;
+  const { profile, billing, exerciseNames } = data;
 
   if (profile === null) {
     return (
@@ -282,6 +292,13 @@ export default function ProfileScreen() {
           ))
         )}
       </Card>
+
+      <BillingCard
+        profile={billing}
+        onSaved={() => {
+          void load();
+        }}
+      />
 
       <SyncCard />
 

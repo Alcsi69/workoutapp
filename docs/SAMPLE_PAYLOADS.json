@@ -31,8 +31,8 @@
     }
   },
 
-  "aiProgramRequestExample": {
-    "requestId": "ai_req_m3k2f1ab",
+  "clientSyncPullExample": {
+    "syncId": "sync_pull_m3k2f1ab",
     "generatedAt": "2026-11-04T18:30:00.000Z",
     "locale": "hu",
     "profile": {
@@ -66,21 +66,37 @@
         }
       }
     },
+    "billingProfile": {
+      "userId": "usr_local",
+      "fullName": "Kovács Anna",
+      "email": "anna@example.com",
+      "phone": "+36 30 123 4567",
+      "billingName": "Kovács Anna",
+      "billingCountry": "Magyarország",
+      "billingZip": "1052",
+      "billingCity": "Budapest",
+      "billingAddress": "Váci utca 12.",
+      "taxNumber": "12345678-1-42",
+      "updatedAt": "2026-11-04T18:00:00.000Z"
+    },
     "catalog": [
       {
         "id": "front_squat",
         "nameHu": "Elölguggolás",
         "nameEn": "Front Squat",
         "category": "compound_lower",
+        "equipment": "barbell",
+        "movementPattern": "squat",
         "primaryMuscles": ["quadriceps", "glutes", "core"],
         "axialLoadScore": 3,
         "kneeStressScore": 3,
-        "defaultSubstituteIds": ["belt_squat"]
+        "defaultSubstituteIds": ["belt_squat"],
+        "isCustom": false
       }
     ]
   },
 
-  "syncBatchRequestExample": {
+  "clientSyncPushExample": {
     "batchId": "sync_m3k2f1ab",
     "generatedAt": "2026-11-04T18:30:00.000Z",
     "deviceId": "usr_local",
@@ -106,10 +122,13 @@
               "nameHu": "Román felhúzás",
               "nameEn": "Romanian Deadlift",
               "category": "compound_lower",
+              "equipment": "barbell",
+              "movementPattern": "hinge",
               "primaryMuscles": ["hamstrings", "glutes", "lower_back"],
               "axialLoadScore": 4,
               "kneeStressScore": 2,
-              "defaultSubstituteIds": []
+              "defaultSubstituteIds": [],
+              "isCustom": false
             },
             "sets": [
               {
@@ -126,7 +145,30 @@
           }
         ],
         "syncStatus": "local_dirty"
-      },
+      }
+    ],
+    "bookings": [
+      {
+        "id": "book_m3k2f1ab",
+        "slotId": "slot_online_1",
+        "userId": "usr_local",
+        "modality": "online_call",
+        "startsAt": "2026-11-07T18:00:00.000Z",
+        "endsAt": "2026-11-07T18:45:00.000Z",
+        "locationOrLink": "https://meet.example.com/coach/session-1",
+        "clientNotes": "Szeretném átnézni a guggolás technikámat.",
+        "status": "pending",
+        "syncStatus": "local_dirty",
+        "createdAt": "2026-11-04T19:00:00.000Z"
+      }
+    ]
+  },
+
+  "syncBatchRequestExample": {
+    "batchId": "sync_m3k2f1ab",
+    "generatedAt": "2026-11-04T18:30:00.000Z",
+    "deviceId": "usr_local",
+    "sessions": [
       {
         "id": "sess_run_01",
         "programDayId": "tpl_run_5k",

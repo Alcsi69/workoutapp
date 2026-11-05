@@ -7,6 +7,8 @@
 
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type {
+  CoachingBookingStatus,
+  CoachingModality,
   Equipment,
   EquipmentTier,
   ExerciseCategory,
@@ -17,10 +19,11 @@ import type {
   SessionType,
   SetType,
   SyncStatus,
+  TemplateSource,
   TrainingGoal,
 } from '../types/workout';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export interface Migration {
   version: number;
@@ -184,6 +187,67 @@ export const migrations: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_catalog_name_en ON exercise_catalog(name_en);`,
     ],
   },
+  {
+    version: 5,
+    statements: [
+      // --- Human Coach platform ---------------------------------------------
+      // Contact + Hungarian billing/invoicing record, coach-assigned templates,
+      // and the 1-on-1 coaching booking system (online call & in-person).
+      `CREATE TABLE IF NOT EXISTS client_billing_profiles (
+        id TEXT PRIMARY KEY NOT NULL,             -- owner (profile id)
+        full_name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        billing_name TEXT NOT NULL,               -- magánszemély vagy cégnév
+        billing_country TEXT NOT NULL DEFAULT 'Magyarország',
+        billing_zip TEXT NOT NULL,                -- irányítószám
+        billing_city TEXT NOT NULL,               -- település
+        billing_address TEXT NOT NULL,            -- utca, házszám
+        tax_number TEXT,                          -- adószám (opcionális)
+        created_at TEXT NOT NULL,                 -- ISO-8601
+        updated_at TEXT NOT NULL                  -- ISO-8601
+      );`,
+
+      // --- Coach-assigned plans ---------------------------------------------
+      // Existing templates default to 'seed'; user-built ones are re-tagged as
+      // 'custom' so the Sablonok grouping stays correct after the migration.
+      `ALTER TABLE workout_templates ADD COLUMN source TEXT NOT NULL DEFAULT 'seed';`,
+      `ALTER TABLE workout_templates ADD COLUMN coach_note TEXT;`,
+      `ALTER TABLE workout_templates ADD COLUMN assigned_at TEXT;`,
+      `UPDATE workout_templates SET source = 'custom' WHERE id LIKE 'tpl_user%';`,
+      `CREATE INDEX IF NOT EXISTS idx_templates_source ON workout_templates(source);`,
+
+      // --- Coaching slots (synced from the coach) ---------------------------
+      `CREATE TABLE IF NOT EXISTS coaching_slots (
+        id TEXT PRIMARY KEY NOT NULL,
+        starts_at TEXT NOT NULL,                  -- ISO-8601
+        ends_at TEXT NOT NULL,                    -- ISO-8601
+        modality TEXT NOT NULL,                   -- 'online_call' | 'irl_gym'
+        location_or_link TEXT NOT NULL,
+        is_booked INTEGER NOT NULL DEFAULT 0      -- SQLite 0/1
+      );`,
+
+      // --- Coaching bookings (client's reservations) ------------------------
+      `CREATE TABLE IF NOT EXISTS coaching_bookings (
+        id TEXT PRIMARY KEY NOT NULL,
+        slot_id TEXT NOT NULL REFERENCES coaching_slots(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        modality TEXT NOT NULL,                   -- 'online_call' | 'irl_gym'
+        starts_at TEXT NOT NULL,                  -- ISO-8601
+        ends_at TEXT NOT NULL,                    -- ISO-8601
+        location_or_link TEXT NOT NULL,
+        client_notes TEXT,
+        coach_notes TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',   -- CoachingBookingStatus
+        sync_status TEXT NOT NULL DEFAULT 'local_dirty',
+        created_at TEXT NOT NULL                  -- ISO-8601
+      );`,
+
+      `CREATE INDEX IF NOT EXISTS idx_coaching_slots_starts ON coaching_slots(starts_at);`,
+      `CREATE INDEX IF NOT EXISTS idx_coaching_bookings_slot ON coaching_bookings(slot_id);`,
+      `CREATE INDEX IF NOT EXISTS idx_coaching_bookings_sync ON coaching_bookings(sync_status);`,
+    ],
+  },
 ];
 
 /**
@@ -321,6 +385,9 @@ export interface WorkoutTemplateRow {
   title: string;
   session_type: SessionType;
   goal: TrainingGoal | null;
+  source: TemplateSource;
+  coach_note: string | null;
+  assigned_at: string | null;
   created_at: string;
 }
 
@@ -357,3 +424,42 @@ export type SchemaDomainUnions = {
   goal: TrainingGoal;
   equipment: EquipmentTier;
 };
+
+export interface ClientBillingProfileRow {
+  id: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  billing_name: string;
+  billing_country: string;
+  billing_zip: string;
+  billing_city: string;
+  billing_address: string;
+  tax_number: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoachingSlotRow {
+  id: string;
+  starts_at: string;
+  ends_at: string;
+  modality: CoachingModality;
+  location_or_link: string;
+  is_booked: number; // SQLite 0/1 — surfaced to the domain as a boolean
+}
+
+export interface CoachingBookingRow {
+  id: string;
+  slot_id: string;
+  user_id: string;
+  modality: CoachingModality;
+  starts_at: string;
+  ends_at: string;
+  location_or_link: string;
+  client_notes: string | null;
+  coach_notes: string | null;
+  status: CoachingBookingStatus;
+  sync_status: SyncStatus;
+  created_at: string;
+}

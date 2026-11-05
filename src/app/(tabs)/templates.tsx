@@ -19,11 +19,6 @@ import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
 import type { ExerciseCatalogItem, LoadScore, WorkoutTemplate } from '../../types/workout';
 
-/** Locally created templates carry the `tpl_user` id prefix. */
-function isCustomTemplate(template: WorkoutTemplate): boolean {
-  return template.id.startsWith('tpl_user');
-}
-
 function loadColor(score: LoadScore): string {
   const tone = loadTone(score);
   if (tone === 'danger') {
@@ -53,6 +48,12 @@ function TemplateCard({
           tone={template.sessionType === 'running' ? 'accent' : 'success'}
         />
       </View>
+      {template.coachNote !== undefined ? (
+        <View style={styles.coachNote}>
+          <Pill label={hu.screens.templates.coachNoteBadge} tone="accent" />
+          <Text style={styles.coachNoteText}>{template.coachNote}</Text>
+        </View>
+      ) : null}
       <Text style={styles.caption}>
         {template.exercises.length} {hu.screens.templates.exerciseCount}
       </Text>
@@ -205,12 +206,14 @@ export default function TemplatesScreen() {
     );
   }
 
-  const custom = templates.filter(isCustomTemplate);
-  const strength = templates.filter(
-    (template) => !isCustomTemplate(template) && template.sessionType === 'strength',
+  const coach = templates.filter((template) => template.source === 'coach');
+  const own = templates.filter((template) => template.source !== 'coach');
+  const custom = own.filter((template) => template.source === 'custom');
+  const strength = own.filter(
+    (template) => template.source !== 'custom' && template.sessionType === 'strength',
   );
-  const running = templates.filter(
-    (template) => !isCustomTemplate(template) && template.sessionType !== 'strength',
+  const running = own.filter(
+    (template) => template.source !== 'custom' && template.sessionType !== 'strength',
   );
 
   return (
@@ -243,6 +246,15 @@ export default function TemplatesScreen() {
         </Card>
       ) : (
         <>
+          <TemplateGroup
+            title={hu.screens.templates.coachGroup}
+            templates={coach}
+            startingId={startingId}
+            onStart={handleStart}
+          />
+          {own.length > 0 ? (
+            <Text style={styles.sectionTitle}>{hu.screens.templates.ownGroup}</Text>
+          ) : null}
           <TemplateGroup
             title={hu.screens.templates.customGroup}
             templates={custom}
@@ -301,6 +313,25 @@ const styles = StyleSheet.create({
   banner: {
     color: colors.success,
     fontSize: typography.sizes.sm,
+  },
+  sectionTitle: {
+    marginTop: spacing.lg,
+    color: colors.textPrimary,
+    fontSize: typography.sizes.md,
+    fontWeight: typography.weights.semibold,
+  },
+  coachNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  coachNoteText: {
+    flexShrink: 1,
+    color: colors.textSecondary,
+    fontSize: typography.sizes.xs,
+    fontStyle: 'italic',
   },
   group: {
     gap: spacing.md,

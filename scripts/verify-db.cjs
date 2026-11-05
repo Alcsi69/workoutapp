@@ -40,12 +40,14 @@ const {
 } = require('../.verify-build/store/useActiveWorkoutStore.js');
 const {
   generateProgramFromProfile,
-  buildAiProgramRequestPayload,
+  buildClientSyncPullPayload,
 } = require('../.verify-build/services/routineGenerator.js');
 const {
   syncPendingWorkouts,
   buildSyncBatchPayload,
+  buildClientSyncPushPayload,
 } = require('../.verify-build/services/syncService.js');
+const billing = require('../.verify-build/services/billing.js');
 const plateCalculator = require('../.verify-build/services/plateCalculator.js');
 const backupService = require('../.verify-build/services/backupService.js');
 
@@ -905,9 +907,9 @@ async function main() {
     assert.equal(second.templateCount, genResult.templateCount);
   });
 
-  await check('buildAiProgramRequestPayload matches the sample contract', async () => {
-    const request = await buildAiProgramRequestPayload(db);
-    assert.ok(request.requestId.startsWith('ai_req'));
+  await check('buildClientSyncPullPayload matches the coach sync contract', async () => {
+    const request = await buildClientSyncPullPayload(db);
+    assert.ok(request.syncId.startsWith('sync_pull'));
     assert.ok(request.generatedAt.length > 0);
     assert.equal(request.locale, 'hu');
     assert.equal(request.profile.userId, 'usr_local');
@@ -918,6 +920,8 @@ async function main() {
     assert.deepEqual(request.profile.constraints.preferredSubstitutions, {
       hack_squat: 'belt_squat',
     });
+    // No billing profile has been saved yet in this run.
+    assert.equal(request.billingProfile, null);
     // The full shipped catalog plus any user-created exercises (>= the seed).
     assert.ok(request.catalog.length >= EXERCISE_CATALOG.length);
     assert.ok(request.catalog.some((item) => item.id === 'belt_squat'));
@@ -1765,6 +1769,235 @@ async function main() {
     );
   });
 
+  console.log('\nschema v5: billing + coach sync (phase 7A)');
+
+  await check('migration v5 creates the coaching + billing tables and template columns', () => {
+    const tables = raw
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((row) => row.name);
+    assert.ok(tables.includes('client_billing_profiles'));
+    assert.ok(tables.includes('coaching_slots'));
+    assert.ok(tables.includes('coaching_bookings'));
+    const columns = raw
+      .prepare('PRAGMA table_info(workout_templates)')
+      .all()
+      .map((row) => row.name);
+    assert.ok(columns.includes('source'));
+    assert.ok(columns.includes('coach_note'));
+    assert.ok(columns.includes('assigned_at'));
+    // User-built templates were re-tagged off the 'seed' default by the migration.
+    const custom = raw
+      .prepare("SELECT source FROM workout_templates WHERE id = ?")
+      .get(customHack.id);
+    assert.equal(custom.source, 'custom');
+  });
+
+  await check('billing validation requires the mandatory contact fields', () => {
+    const empty = billing.createEmptyBillingInput(repository.USER_PROFILE_ID);
+    assert.equal(empty.billingCountry, 'Magyarország');
+    const missing = billing.validateClientBillingProfile(empty);
+    assert.equal(missing.valid, false);
+    for (const field of ['fullName', 'email', 'phone', 'billingZip', 'billingCity', 'billingAddress']) {
+      assert.ok(missing.missingFields.includes(field), `expected ${field} to be required`);
+    }
+
+    const badEmail = billing.validateClientBillingProfile({
+      ...empty,
+      fullName: 'Kovács Anna',
+      email: 'not-an-email',
+      phone: '+36 30 123 4567',
+      billingName: 'Kovács Anna',
+      billingZip: '1052',
+      billingCity: 'Budapest',
+      billingAddress: 'Váci utca 12.',
+    });
+    assert.equal(badEmail.valid, false);
+    assert.equal(badEmail.invalidEmail, true);
+    assert.equal(badEmail.missingFields.length, 0);
+
+    assert.equal(billing.isValidEmail('anna@example.com'), true);
+    assert.equal(billing.isValidEmail('nope'), false);
+  });
+
+  const billingInput = {
+    userId: repository.USER_PROFILE_ID,
+    fullName: 'Kovács Anna',
+    email: 'anna@example.com',
+    phone: '+36 30 123 4567',
+    billingName: 'Kovács Anna',
+    billingCountry: 'Magyarország',
+    billingZip: '1052',
+    billingCity: 'Budapest',
+    billingAddress: 'Váci utca 12.',
+    taxNumber: '12345678-1-42',
+  };
+  await repository.saveClientBillingProfile(db, billingInput);
+
+  await check('saveClientBillingProfile persists and round-trips every field', async () => {
+    const saved = await repository.getClientBillingProfile(db);
+    assert.ok(saved !== null);
+    assert.equal(saved.userId, repository.USER_PROFILE_ID);
+    assert.equal(saved.fullName, 'Kovács Anna');
+    assert.equal(saved.email, 'anna@example.com');
+    assert.equal(saved.phone, '+36 30 123 4567');
+    assert.equal(saved.billingZip, '1052');
+    assert.equal(saved.billingCity, 'Budapest');
+    assert.equal(saved.billingAddress, 'Váci utca 12.');
+    assert.equal(saved.billingCountry, 'Magyarország');
+    assert.equal(saved.taxNumber, '12345678-1-42');
+    assert.ok(saved.updatedAt.length > 0);
+  });
+
+  await check('re-saving updates the single row and clears an omitted tax number', async () => {
+    await repository.saveClientBillingProfile(db, {
+      ...billingInput,
+      billingName: 'Példa Kft.',
+      taxNumber: undefined,
+    });
+    assert.equal(raw.prepare('SELECT COUNT(*) AS c FROM client_billing_profiles').get().c, 1);
+    const saved = await repository.getClientBillingProfile(db);
+    assert.equal(saved.billingName, 'Példa Kft.');
+    assert.equal(saved.taxNumber, undefined);
+  });
+
+  await check('a blank billing country falls back to the default', async () => {
+    const saved = await repository.saveClientBillingProfile(db, {
+      ...billingInput,
+      billingCountry: '   ',
+    });
+    assert.equal(saved.billingCountry, 'Magyarország');
+  });
+
+  await check('buildClientSyncPullPayload attaches the saved billing profile', async () => {
+    const pull = await buildClientSyncPullPayload(db);
+    assert.ok(pull.billingProfile !== null);
+    assert.equal(pull.billingProfile.fullName, 'Kovács Anna');
+    assert.equal(pull.billingProfile.billingZip, '1052');
+  });
+
+  console.log('\ncoach-assigned plans (phase 7A)');
+
+  const coachTemplate = await repository.assignCoachTemplate(db, {
+    id: 'tpl_coach_1',
+    title: 'Edzői terv — Guggolás fókusz',
+    sessionType: 'strength',
+    goal: 'strength',
+    coachNote: 'Heti 2x guggolás a térdkímélő sávban.',
+    blocks: [{ exerciseId: 'front_squat', targetSets: 5, targetReps: '5', restSeconds: 180 }],
+  });
+
+  await check('assignCoachTemplate marks the plan as coach-assigned with a note', () => {
+    assert.equal(coachTemplate.source, 'coach');
+    assert.equal(coachTemplate.coachNote, 'Heti 2x guggolás a térdkímélő sávban.');
+    assert.ok(coachTemplate.assignedAt.length > 0);
+    assert.equal(coachTemplate.exercises.length, 1);
+    assert.equal(coachTemplate.exercises[0].exerciseId, 'front_squat');
+  });
+
+  await check('coach-assigned plans group together and sort to the top', async () => {
+    const all = await repository.getWorkoutTemplates(db);
+    assert.equal(all[0].id, 'tpl_coach_1'); // coach-first ordering
+    const coachOnly = await repository.getCoachAssignedTemplates(db);
+    assert.deepEqual(coachOnly.map((template) => template.id), ['tpl_coach_1']);
+    // Everything else keeps its seed/custom source.
+    assert.ok(all.some((template) => template.source === 'custom'));
+    assert.ok(all.some((template) => template.source === 'seed'));
+  });
+
+  console.log('\ncoaching slots + bookings (phase 7A)');
+
+  const slotNow = new Date('2026-11-05T08:00:00.000Z');
+
+  await check('seedCoachingSlots seeds upcoming online + IRL slots and is idempotent', async () => {
+    const inserted = await repository.seedCoachingSlots(db, slotNow);
+    assert.equal(inserted, 5);
+    assert.equal(await repository.seedCoachingSlots(db, slotNow), 0);
+    const slots = await repository.getCoachingSlots(db);
+    assert.equal(slots.length, 5);
+    assert.ok(slots.some((slot) => slot.modality === 'online_call'));
+    assert.ok(slots.some((slot) => slot.modality === 'irl_gym'));
+    assert.ok(slots.every((slot) => slot.isBooked === false));
+    const open = await repository.getOpenCoachingSlots(db, slotNow);
+    assert.equal(open.length, 5);
+    // Soonest first.
+    assert.ok(open[0].startsAt <= open[open.length - 1].startsAt);
+  });
+
+  const openSlots = await repository.getOpenCoachingSlots(db, slotNow);
+  const onlineSlot = openSlots.find((slot) => slot.modality === 'online_call');
+  const booked = await repository.createCoachingBooking(
+    db,
+    onlineSlot.id,
+    'Technika átnézés',
+  );
+
+  await check('createCoachingBooking writes a pending local_dirty booking and books the slot', () => {
+    assert.equal(booked.status, 'pending');
+    assert.equal(booked.syncStatus, 'local_dirty');
+    assert.equal(booked.slotId, onlineSlot.id);
+    assert.equal(booked.modality, 'online_call');
+    assert.equal(booked.clientNotes, 'Technika átnézés');
+    assert.equal(booked.userId, repository.USER_PROFILE_ID);
+    assert.ok(booked.createdAt.length > 0);
+    const slotRow = raw.prepare('SELECT is_booked FROM coaching_slots WHERE id = ?').get(onlineSlot.id);
+    assert.equal(slotRow.is_booked, 1);
+  });
+
+  await check('booking an already-booked or unknown slot is rejected', async () => {
+    await assert.rejects(
+      () => repository.createCoachingBooking(db, onlineSlot.id),
+      /már le van foglalva/,
+    );
+    await assert.rejects(
+      () => repository.createCoachingBooking(db, 'slot_missing'),
+      /Ismeretlen időpont/,
+    );
+  });
+
+  await check('open slots exclude the booked one', async () => {
+    const open = await repository.getOpenCoachingSlots(db, slotNow);
+    assert.equal(open.length, 4);
+    assert.equal(open.some((slot) => slot.id === onlineSlot.id), false);
+    assert.equal((await repository.getCoachingBookings(db)).length, 1);
+  });
+
+  await check('cancelCoachingBooking cancels the booking and frees the slot', async () => {
+    const cancelled = await repository.cancelCoachingBooking(db, booked.id);
+    assert.equal(cancelled, true);
+    const row = raw
+      .prepare('SELECT status, sync_status FROM coaching_bookings WHERE id = ?')
+      .get(booked.id);
+    assert.equal(row.status, 'cancelled');
+    assert.equal(row.sync_status, 'local_dirty');
+    const slotRow = raw.prepare('SELECT is_booked FROM coaching_slots WHERE id = ?').get(onlineSlot.id);
+    assert.equal(slotRow.is_booked, 0);
+    // Cancelling twice is a no-op; the slot is open again.
+    assert.equal(await repository.cancelCoachingBooking(db, booked.id), false);
+    const open = await repository.getOpenCoachingSlots(db, slotNow);
+    assert.equal(open.length, 5);
+  });
+
+  await check('buildClientSyncPushPayload carries dirty bookings and sessions', async () => {
+    const dirty = await repository.getDirtyCoachingBookings(db);
+    assert.ok(dirty.some((booking) => booking.id === booked.id));
+    const push = await buildClientSyncPushPayload(db);
+    assert.ok(push.batchId.startsWith('sync_'));
+    assert.equal(push.deviceId, repository.USER_PROFILE_ID);
+    assert.ok(push.bookings.some((booking) => booking.id === booked.id));
+    assert.ok(push.sessions.length > 0);
+  });
+
+  await check('markCoachingBookingsSynced flips only the given bookings', async () => {
+    const changed = await repository.markCoachingBookingsSynced(db, [booked.id]);
+    assert.equal(changed, 1);
+    const row = raw
+      .prepare('SELECT sync_status FROM coaching_bookings WHERE id = ?')
+      .get(booked.id);
+    assert.equal(row.sync_status, 'synced');
+    assert.equal((await repository.getDirtyCoachingBookings(db)).length, 0);
+  });
+
   console.log('\nfull backup + restore (phase 6)');
 
   const snapshotJson = await backupService.exportFullDatabaseSnapshot(db);
@@ -1779,6 +2012,11 @@ async function main() {
     assert.ok(parsed.data.setLogs.length > 0);
     assert.ok(parsed.data.customTemplates.some((template) => template.id === customHack.id));
     assert.ok(parsed.data.runningMetrics.length > 0);
+    // Phase 7A additions ride along in the snapshot.
+    assert.ok(parsed.data.clientBillingProfile !== null);
+    assert.equal(parsed.data.clientBillingProfile.billing_city, 'Budapest');
+    assert.equal(parsed.data.coachingSlots.length, 5);
+    assert.ok(parsed.data.coachingBookings.length >= 1);
   });
 
   const sourceCounts = {
@@ -1787,6 +2025,8 @@ async function main() {
     sets: raw.prepare('SELECT COUNT(*) AS c FROM set_logs').get().c,
     runs: raw.prepare('SELECT COUNT(*) AS c FROM running_metrics').get().c,
     customExercises: raw.prepare('SELECT COUNT(*) AS c FROM exercise_catalog WHERE is_custom = 1').get().c,
+    coachingSlots: raw.prepare('SELECT COUNT(*) AS c FROM coaching_slots').get().c,
+    coachingBookings: raw.prepare('SELECT COUNT(*) AS c FROM coaching_bookings').get().c,
   };
 
   const { db: restoreDb, raw: restoreRaw } = createDatabase();
@@ -1810,6 +2050,22 @@ async function main() {
     assert.equal(
       restoreRaw.prepare('SELECT COUNT(*) AS c FROM exercise_catalog WHERE is_custom = 1').get().c,
       sourceCounts.customExercises,
+    );
+  });
+
+  await check('importFullDatabaseSnapshot restores the billing profile and coaching data', async () => {
+    const restored = await repository.getClientBillingProfile(restoreDb);
+    assert.ok(restored !== null);
+    assert.equal(restored.fullName, 'Kovács Anna');
+    assert.equal(restored.billingZip, '1052');
+    assert.equal(restored.billingCountry, 'Magyarország');
+    assert.equal(
+      restoreRaw.prepare('SELECT COUNT(*) AS c FROM coaching_slots').get().c,
+      sourceCounts.coachingSlots,
+    );
+    assert.equal(
+      restoreRaw.prepare('SELECT COUNT(*) AS c FROM coaching_bookings').get().c,
+      sourceCounts.coachingBookings,
     );
   });
 

@@ -6,9 +6,10 @@
 // and nothing is marked synced.
 
 import type { SQLiteDatabase } from 'expo-sqlite';
-import type { SyncBatchPayload } from '../types/workout';
+import type { ClientSyncPushPayload, SyncBatchPayload } from '../types/workout';
 import {
   USER_PROFILE_ID,
+  getDirtyCoachingBookings,
   getDirtySessionsPayload,
   markSessionsSynced,
 } from '../db/repository';
@@ -62,6 +63,28 @@ export async function buildSyncBatchPayload(db: SQLiteDatabase): Promise<SyncBat
     generatedAt: new Date().toISOString(),
     deviceId: USER_PROFILE_ID,
     sessions,
+  };
+}
+
+/**
+ * Builds the coach-push envelope (Phase 7A): every locally dirty workout session
+ * plus every locally dirty coaching booking, so the coach dashboard can ingest
+ * the client's whole changed state in one request. Consumed by the `/server`
+ * backend in Phase 7B; on-device it drives the JSON preview.
+ */
+export async function buildClientSyncPushPayload(
+  db: SQLiteDatabase,
+): Promise<ClientSyncPushPayload> {
+  const [sessions, bookings] = await Promise.all([
+    getDirtySessionsPayload(db),
+    getDirtyCoachingBookings(db),
+  ]);
+  return {
+    batchId: createBatchId(),
+    generatedAt: new Date().toISOString(),
+    deviceId: USER_PROFILE_ID,
+    sessions,
+    bookings,
   };
 }
 

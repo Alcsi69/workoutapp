@@ -183,6 +183,9 @@ export interface RunningMetrics {
 export type SessionType = 'strength' | 'running' | 'hybrid';
 export type SyncStatus = 'local_dirty' | 'synced';
 
+/** Where a template came from: first-party seed, user-built, or coach-assigned. */
+export type TemplateSource = 'seed' | 'custom' | 'coach';
+
 export interface WorkoutSessionLog {
   id: string;
   programDayId?: string;
@@ -214,6 +217,12 @@ export interface WorkoutTemplate {
   title: string;
   sessionType: SessionType;
   goal?: TrainingGoal;
+  /** Origin of the template — drives the Sablonok grouping (coach vs own/basic). */
+  source: TemplateSource;
+  /** Coach's free-text note; rendered as a badge on coach-assigned plans. */
+  coachNote?: string;
+  /** ISO-8601 timestamp of when a coach assigned the plan (source === 'coach'). */
+  assignedAt?: string;
   createdAt: string;
   exercises: WorkoutTemplateExercise[];
 }
@@ -223,7 +232,7 @@ export interface WorkoutTemplateExercise extends TemplateExerciseBlock {
   exercise: ExerciseCatalogItem;
 }
 
-// --- Phase 4: AI program requests, custom templates, sync batches -----------
+// --- Phase 4: custom templates, session batches, coach sync contracts --------
 // These mirror the examples documented in /docs/SAMPLE_PAYLOADS.json.
 
 /** A block supplied when the user builds a custom template by hand. */
@@ -247,24 +256,48 @@ export interface CustomTemplateInput {
 }
 
 /**
- * Body POSTed to the external routine-generation endpoint. Serialized verbatim —
- * `profile` is the pure `OnboardingPayload` (drop the UserProfile bookkeeping).
+ * Session-only sync batch: the offline queue's outgoing leg when flushing
+ * locally dirty workouts. Superseded by `ClientSyncPushPayload` for the full
+ * coach backend, but kept for the on-device preview and dry-run export.
  */
-export interface AiProgramRequestPayload {
-  requestId: string;
-  generatedAt: string; // ISO-8601
-  locale: OnboardingPayload['locale'];
-  profile: OnboardingPayload;
-  /** The exercise vocabulary the generator may pick from. */
-  catalog: ExerciseCatalogItem[];
-}
-
-/** Body POSTed when flushing locally dirty sessions to the backend. */
 export interface SyncBatchPayload {
   batchId: string;
   generatedAt: string; // ISO-8601
   deviceId: string;
   sessions: WorkoutSessionLog[];
+}
+
+/**
+ * Coach sync (Phase 7A). The Human-Coach platform replaces the old automated
+ * routine-generation request with two clean contracts:
+ *
+ * - `ClientSyncPullPayload` — the client asks the coach backend for its
+ *   assignments (coach plans + available slots). Serialized verbatim; `profile`
+ *   is the pure `OnboardingPayload` (drop the UserProfile bookkeeping) and the
+ *   billing profile travels so the coach can invoice the client.
+ * - `ClientSyncPushPayload` — the client pushes its locally-changed state
+ *   (dirty sessions and bookings) up to the coach dashboard.
+ */
+
+/** Client -> coach backend request body ("what has my coach assigned me?"). */
+export interface ClientSyncPullPayload {
+  syncId: string;
+  generatedAt: string; // ISO-8601
+  locale: OnboardingPayload['locale'];
+  profile: OnboardingPayload;
+  /** Contact & billing details the coach needs to issue invoices. */
+  billingProfile: ClientBillingProfile | null;
+  /** The exercise vocabulary coach-assigned plans may reference. */
+  catalog: ExerciseCatalogItem[];
+}
+
+/** Coach backend -> client request body ("here is my local state"). */
+export interface ClientSyncPushPayload {
+  batchId: string;
+  generatedAt: string; // ISO-8601
+  deviceId: string;
+  sessions: WorkoutSessionLog[];
+  bookings: CoachingBooking[];
 }
 
 // --- Phase 5: progressive overload memory, 1RM analytics, PR detection ------
@@ -366,4 +399,73 @@ export interface RunningProgressionSummary {
   best7k?: BestEffortPace;
   trend: RunningTrend;
 }
+
+// --- Phase 7A: Human Coach platform (Schema v5) -----------------------------
+//
+// Client contact & Hungarian billing/invoicing, coach-assigned plans, and the
+// 1-on-1 coaching booking system (online call & in-person training).
+
+/** Contact & Hungarian billing/invoicing record for one client. */
+export interface ClientBillingProfile {
+  /** Owner (the local profile id). */
+  userId: string;
+  // --- Contact -------------------------------------------------------------
+  fullName: string;
+  email: string;
+  phone: string;
+  // --- Billing (Számlázás) -------------------------------------------------
+  /** Invoice name: a private individual's name or a company name. */
+  billingName: string;
+  /** Defaults to 'Magyarország'. */
+  billingCountry: string;
+  /** Irányítószám. */
+  billingZip: string;
+  /** Település. */
+  billingCity: string;
+  /** Utca, házszám. */
+  billingAddress: string;
+  /** Adószám — optional; only for companies / sole proprietors (EV). */
+  taxNumber?: string;
+  updatedAt: string; // ISO-8601
+}
+
+/** What the Contact & Billing form collects (bookkeeping columns added on save). */
+export type ClientBillingProfileInput = Omit<ClientBillingProfile, 'updatedAt'>;
+
+export const DEFAULT_BILLING_COUNTRY = 'Magyarország';
+
+/** How a coaching session happens. */
+export type CoachingModality = 'online_call' | 'irl_gym';
+
+export type CoachingBookingStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
+
+/** A bookable time slot synced from the coach. */
+export interface CoachingSlot {
+  id: string;
+  startsAt: string; // ISO-8601
+  endsAt: string; // ISO-8601
+  modality: CoachingModality;
+  /** Video-call link (online) or gym address (IRL). */
+  locationOrLink: string;
+  isBooked: boolean;
+}
+
+/** A client's booking of a coaching slot. */
+export interface CoachingBooking {
+  id: string;
+  slotId: string;
+  userId: string;
+  modality: CoachingModality;
+  startsAt: string; // ISO-8601
+  endsAt: string; // ISO-8601
+  locationOrLink: string;
+  /** Note the client attaches when booking ("Megjegyzés az edzőnek"). */
+  clientNotes?: string;
+  /** Note the coach attaches after the session. */
+  coachNotes?: string;
+  status: CoachingBookingStatus;
+  syncStatus: SyncStatus;
+  createdAt: string; // ISO-8601
+}
+
 

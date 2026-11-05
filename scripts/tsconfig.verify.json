@@ -21,6 +21,7 @@
     "../src/services/loggerDrafts.ts",
     "../src/services/exerciseSearch.ts",
     "../src/services/recommendation.ts",
+    "../src/services/billing.ts",
     "../src/services/routineGenerator.ts",
     "../src/services/syncService.ts",
     "../src/services/plateCalculator.ts",

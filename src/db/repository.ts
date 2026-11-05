@@ -15,6 +15,11 @@ import {
   totalVolumeKg,
 } from '../services/analytics';
 import type {
+  ClientBillingProfile,
+  ClientBillingProfileInput,
+  CoachingBooking,
+  CoachingBookingStatus,
+  CoachingSlot,
   CustomExerciseInput,
   CustomTemplateInput,
   ExerciseCatalogItem,
@@ -32,13 +37,19 @@ import type {
   SetLog,
   SetType,
   SyncStatus,
+  TemplateSource,
   TrainingGoal,
   UserProfile,
   WorkoutSessionLog,
   WorkoutTemplate,
   WorkoutTemplateExercise,
 } from '../types/workout';
+// Value import: the default billing country constant (types above are type-only).
+import { DEFAULT_BILLING_COUNTRY } from '../types/workout';
 import type {
+  ClientBillingProfileRow,
+  CoachingBookingRow,
+  CoachingSlotRow,
   ExerciseCatalogRow,
   JointConstraintRow,
   RunningMetricsRow,
@@ -369,9 +380,10 @@ export async function createCustomExercise(
 // --- Program templates ------------------------------------------------------
 
 const SELECT_TEMPLATES_SQL = `
-  SELECT id, title, session_type, goal, created_at
+  SELECT id, title, session_type, goal, source, coach_note, assigned_at, created_at
   FROM workout_templates
   ORDER BY
+    CASE source WHEN 'coach' THEN 0 ELSE 1 END,
     CASE session_type WHEN 'strength' THEN 0 WHEN 'hybrid' THEN 1 ELSE 2 END,
     created_at,
     title;
@@ -436,11 +448,18 @@ export async function getWorkoutTemplates(db: SQLiteDatabase): Promise<WorkoutTe
       id: row.id,
       title: row.title,
       sessionType: row.session_type,
+      source: row.source,
       createdAt: row.created_at,
       exercises: blocksByTemplate.get(row.id) ?? [],
     };
     if (row.goal !== null) {
       template.goal = row.goal;
+    }
+    if (row.coach_note !== null && row.coach_note.length > 0) {
+      template.coachNote = row.coach_note;
+    }
+    if (row.assigned_at !== null) {
+      template.assignedAt = row.assigned_at;
     }
     return template;
   });
@@ -645,12 +664,16 @@ export async function seedDefaultTemplates(db: SQLiteDatabase): Promise<number> 
 // These helpers keep the SQL here so screens/services only speak domain objects.
 
 const UPSERT_TEMPLATE_META_SQL = `
-  INSERT INTO workout_templates (id, title, session_type, goal, created_at)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO workout_templates
+    (id, title, session_type, goal, source, coach_note, assigned_at, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
     title = excluded.title,
     session_type = excluded.session_type,
-    goal = excluded.goal;
+    goal = excluded.goal,
+    source = excluded.source,
+    coach_note = excluded.coach_note,
+    assigned_at = excluded.assigned_at;
 `;
 
 const UPDATE_TEMPLATE_BLOCK_EXERCISE_SQL = `
@@ -703,6 +726,9 @@ export async function createCustomTemplate(
       title,
       input.sessionType,
       input.goal ?? null,
+      'custom',
+      null,
+      null,
       createdAt,
     );
     for (let index = 0; index < input.blocks.length; index += 1) {
@@ -860,6 +886,12 @@ export interface TemplateProgramSeed {
   title: string;
   sessionType: SessionType;
   goal?: TrainingGoal;
+  /** Defaults to 'seed' when omitted. */
+  source?: TemplateSource;
+  /** Coach's note (source === 'coach'). */
+  coachNote?: string;
+  /** ISO-8601 assignment timestamp (source === 'coach'). */
+  assignedAt?: string;
   blocks: TemplateProgramBlockSeed[];
 }
 
@@ -880,6 +912,9 @@ export async function replaceTemplateProgram(
       seed.title,
       seed.sessionType,
       seed.goal ?? null,
+      seed.source ?? 'seed',
+      seed.coachNote ?? null,
+      seed.assignedAt ?? null,
       createdAt,
     );
     await db.runAsync(DELETE_TEMPLATE_BLOCK_SQL, seed.id);
@@ -928,6 +963,445 @@ export async function setTemplateBlockNotes(
   notes: string | null,
 ): Promise<void> {
   await db.runAsync('UPDATE template_exercise_blocks SET notes = ? WHERE id = ?;', notes, blockId);
+}
+
+/**
+ * Assigns (or re-assigns) a coach-authored plan: writes the template with
+ * `source = 'coach'`, stamps `assigned_at` to now unless one is supplied, and
+ * stores the coach's note. Reuses the deterministic block replacement so
+ * re-syncing the same assignment is idempotent. Returns the persisted template.
+ */
+export async function assignCoachTemplate(
+  db: SQLiteDatabase,
+  seed: Omit<TemplateProgramSeed, 'source' | 'assignedAt'> & { assignedAt?: string },
+): Promise<WorkoutTemplate> {
+  await replaceTemplateProgram(db, {
+    ...seed,
+    source: 'coach',
+    assignedAt: seed.assignedAt ?? new Date().toISOString(),
+  });
+  const template = await getWorkoutTemplateById(db, seed.id);
+  if (template === null) {
+    throw new Error('A kijelölt terv mentése sikertelen.');
+  }
+  return template;
+}
+
+/** Coach-assigned plans only, coach-first then newest assignment, grouped for the UI. */
+export async function getCoachAssignedTemplates(db: SQLiteDatabase): Promise<WorkoutTemplate[]> {
+  const templates = await getWorkoutTemplates(db);
+  return templates.filter((template) => template.source === 'coach');
+}
+
+// --- Client contact & billing (Phase 7A) ------------------------------------
+//
+// One row per client, keyed on the stable profile id. The billing name defaults
+// to the contact name (the form's "same as full name" toggle) but is stored
+// verbatim so a company invoice can differ from the individual.
+
+const SELECT_BILLING_PROFILE_SQL = `
+  SELECT id, full_name, email, phone, billing_name, billing_country,
+         billing_zip, billing_city, billing_address, tax_number,
+         created_at, updated_at
+  FROM client_billing_profiles
+  WHERE id = ?
+  LIMIT 1;
+`;
+
+const UPSERT_BILLING_PROFILE_SQL = `
+  INSERT INTO client_billing_profiles
+    (id, full_name, email, phone, billing_name, billing_country,
+     billing_zip, billing_city, billing_address, tax_number, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    full_name = excluded.full_name,
+    email = excluded.email,
+    phone = excluded.phone,
+    billing_name = excluded.billing_name,
+    billing_country = excluded.billing_country,
+    billing_zip = excluded.billing_zip,
+    billing_city = excluded.billing_city,
+    billing_address = excluded.billing_address,
+    tax_number = excluded.tax_number,
+    updated_at = excluded.updated_at;
+`;
+
+function toClientBillingProfile(row: ClientBillingProfileRow): ClientBillingProfile {
+  const profile: ClientBillingProfile = {
+    userId: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    phone: row.phone,
+    billingName: row.billing_name,
+    billingCountry: row.billing_country,
+    billingZip: row.billing_zip,
+    billingCity: row.billing_city,
+    billingAddress: row.billing_address,
+    updatedAt: row.updated_at,
+  };
+  if (row.tax_number !== null && row.tax_number.length > 0) {
+    profile.taxNumber = row.tax_number;
+  }
+  return profile;
+}
+
+/** The client's contact & billing record, or null when none has been saved. */
+export async function getClientBillingProfile(
+  db: SQLiteDatabase,
+  userId: string = USER_PROFILE_ID,
+): Promise<ClientBillingProfile | null> {
+  const row = await db.getFirstAsync<ClientBillingProfileRow>(SELECT_BILLING_PROFILE_SQL, userId);
+  return row === null ? null : toClientBillingProfile(row);
+}
+
+/**
+ * Creates or updates the client's contact & billing record. The caller is
+ * expected to have validated the input (see services/billing.ts); this layer
+ * only normalizes whitespace and stamps `updated_at`. `created_at` is preserved
+ * across updates.
+ */
+export async function saveClientBillingProfile(
+  db: SQLiteDatabase,
+  input: ClientBillingProfileInput,
+): Promise<ClientBillingProfile> {
+  const now = new Date().toISOString();
+  const trim = (value: string): string => value.trim();
+  const taxNumber = input.taxNumber?.trim();
+
+  await db.runAsync(
+    UPSERT_BILLING_PROFILE_SQL,
+    input.userId,
+    trim(input.fullName),
+    trim(input.email),
+    trim(input.phone),
+    trim(input.billingName),
+    trim(input.billingCountry) || DEFAULT_BILLING_COUNTRY,
+    trim(input.billingZip),
+    trim(input.billingCity),
+    trim(input.billingAddress),
+    taxNumber !== undefined && taxNumber.length > 0 ? taxNumber : null,
+    now,
+    now,
+  );
+
+  const saved = await getClientBillingProfile(db, input.userId);
+  if (saved === null) {
+    throw new Error('A számlázási adatok mentése sikertelen.');
+  }
+  return saved;
+}
+
+// --- 1-on-1 coaching (Phase 7A) ---------------------------------------------
+//
+// Slots are the coach's published availability; bookings are the client's
+// reservations. Booking a slot and cancelling are multi-table writes and run in
+// a transaction so a slot can never be double-booked or left stuck as booked.
+
+const SELECT_SLOTS_SQL = `
+  SELECT id, starts_at, ends_at, modality, location_or_link, is_booked
+  FROM coaching_slots
+  ORDER BY starts_at;
+`;
+
+const SELECT_BOOKINGS_SQL = `
+  SELECT id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+         client_notes, coach_notes, status, sync_status, created_at
+  FROM coaching_bookings
+  WHERE user_id = ?
+  ORDER BY starts_at DESC;
+`;
+
+const UPSERT_SLOT_SQL = `
+  INSERT OR IGNORE INTO coaching_slots
+    (id, starts_at, ends_at, modality, location_or_link, is_booked)
+  VALUES (?, ?, ?, ?, ?, 0);
+`;
+
+const INSERT_BOOKING_SQL = `
+  INSERT INTO coaching_bookings
+    (id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+     client_notes, coach_notes, status, sync_status, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', 'local_dirty', ?);
+`;
+
+function toCoachingSlot(row: CoachingSlotRow): CoachingSlot {
+  return {
+    id: row.id,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    modality: row.modality,
+    locationOrLink: row.location_or_link,
+    isBooked: row.is_booked === 1,
+  };
+}
+
+function toCoachingBooking(row: CoachingBookingRow): CoachingBooking {
+  const booking: CoachingBooking = {
+    id: row.id,
+    slotId: row.slot_id,
+    userId: row.user_id,
+    modality: row.modality,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    locationOrLink: row.location_or_link,
+    status: row.status,
+    syncStatus: row.sync_status,
+    createdAt: row.created_at,
+  };
+  if (row.client_notes !== null && row.client_notes.length > 0) {
+    booking.clientNotes = row.client_notes;
+  }
+  if (row.coach_notes !== null && row.coach_notes.length > 0) {
+    booking.coachNotes = row.coach_notes;
+  }
+  return booking;
+}
+
+/** A seed slot relative to `from` (days ahead + a fixed local time). */
+interface CoachingSlotSeed {
+  id: string;
+  /** Days from "now" the slot starts. */
+  daysAhead: number;
+  /** Local start hour (24h). */
+  startHour: number;
+  durationMinutes: number;
+  modality: CoachingSlot['modality'];
+  locationOrLink: string;
+}
+
+/**
+ * Realistic upcoming availability so the booking flow works offline, before the
+ * coach backend is wired up. Ids are stable, so re-seeding is a no-op and never
+ * clobbers a booking the client already made.
+ */
+const COACHING_SLOT_SEEDS: readonly CoachingSlotSeed[] = [
+  {
+    id: 'slot_online_1',
+    daysAhead: 2,
+    startHour: 18,
+    durationMinutes: 45,
+    modality: 'online_call',
+    locationOrLink: 'https://meet.example.com/coach/session-1',
+  },
+  {
+    id: 'slot_irl_1',
+    daysAhead: 3,
+    startHour: 9,
+    durationMinutes: 60,
+    modality: 'irl_gym',
+    locationOrLink: 'Iron Temple Gym, Budapest, Váci út 12.',
+  },
+  {
+    id: 'slot_online_2',
+    daysAhead: 5,
+    startHour: 19,
+    durationMinutes: 45,
+    modality: 'online_call',
+    locationOrLink: 'https://meet.example.com/coach/session-2',
+  },
+  {
+    id: 'slot_irl_2',
+    daysAhead: 6,
+    startHour: 10,
+    durationMinutes: 60,
+    modality: 'irl_gym',
+    locationOrLink: 'Iron Temple Gym, Budapest, Váci út 12.',
+  },
+  {
+    id: 'slot_online_3',
+    daysAhead: 9,
+    startHour: 17,
+    durationMinutes: 30,
+    modality: 'online_call',
+    locationOrLink: 'https://meet.example.com/coach/session-3',
+  },
+];
+
+/** Builds the ISO start/end pair for a seed slot relative to `from`. */
+function slotWindow(seed: CoachingSlotSeed, from: Date): { startsAt: string; endsAt: string } {
+  const start = new Date(from);
+  start.setDate(start.getDate() + seed.daysAhead);
+  start.setHours(seed.startHour, 0, 0, 0);
+  const end = new Date(start.getTime() + seed.durationMinutes * 60_000);
+  return { startsAt: start.toISOString(), endsAt: end.toISOString() };
+}
+
+/**
+ * Seeds a handful of upcoming coaching slots. Idempotent (INSERT OR IGNORE on the
+ * stable id) and relative to now, so the offline booking flow always has future
+ * availability. Returns the number of slots actually inserted.
+ */
+export async function seedCoachingSlots(
+  db: SQLiteDatabase,
+  from: Date = new Date(),
+): Promise<number> {
+  let inserted = 0;
+  await db.withTransactionAsync(async () => {
+    for (const seed of COACHING_SLOT_SEEDS) {
+      const { startsAt, endsAt } = slotWindow(seed, from);
+      const result = await db.runAsync(
+        UPSERT_SLOT_SQL,
+        seed.id,
+        startsAt,
+        endsAt,
+        seed.modality,
+        seed.locationOrLink,
+      );
+      inserted += result.changes;
+    }
+  });
+  return inserted;
+}
+
+/** All coaching slots, soonest first. */
+export async function getCoachingSlots(db: SQLiteDatabase): Promise<CoachingSlot[]> {
+  const rows = await db.getAllAsync<CoachingSlotRow>(SELECT_SLOTS_SQL);
+  return rows.map(toCoachingSlot);
+}
+
+/** Open (unbooked) coaching slots whose start is still in the future. */
+export async function getOpenCoachingSlots(
+  db: SQLiteDatabase,
+  now: Date = new Date(),
+): Promise<CoachingSlot[]> {
+  const rows = await db.getAllAsync<CoachingSlotRow>(
+    `SELECT id, starts_at, ends_at, modality, location_or_link, is_booked
+     FROM coaching_slots
+     WHERE is_booked = 0 AND starts_at >= ?
+     ORDER BY starts_at;`,
+    now.toISOString(),
+  );
+  return rows.map(toCoachingSlot);
+}
+
+/** The client's bookings, newest first. */
+export async function getCoachingBookings(
+  db: SQLiteDatabase,
+  userId: string = USER_PROFILE_ID,
+): Promise<CoachingBooking[]> {
+  const rows = await db.getAllAsync<CoachingBookingRow>(SELECT_BOOKINGS_SQL, userId);
+  return rows.map(toCoachingBooking);
+}
+
+/**
+ * Books an open slot for the client: inserts a `pending` booking with
+ * `sync_status = 'local_dirty'` and flips the slot to booked, atomically.
+ * Rejects an unknown slot and a slot that is already booked, so two concurrent
+ * bookings can never collide.
+ */
+export async function createCoachingBooking(
+  db: SQLiteDatabase,
+  slotId: string,
+  clientNotes?: string,
+  userId: string = USER_PROFILE_ID,
+): Promise<CoachingBooking> {
+  const slotRow = await db.getFirstAsync<CoachingSlotRow>(
+    `SELECT id, starts_at, ends_at, modality, location_or_link, is_booked
+     FROM coaching_slots WHERE id = ? LIMIT 1;`,
+    slotId,
+  );
+  if (slotRow === null) {
+    throw new Error(`Ismeretlen időpont: "${slotId}".`);
+  }
+  if (slotRow.is_booked === 1) {
+    throw new Error('Ez az időpont már le van foglalva.');
+  }
+
+  const id = createLocalId('book');
+  const createdAt = new Date().toISOString();
+  const trimmedNotes = clientNotes?.trim();
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      INSERT_BOOKING_SQL,
+      id,
+      slotId,
+      userId,
+      slotRow.modality,
+      slotRow.starts_at,
+      slotRow.ends_at,
+      slotRow.location_or_link,
+      trimmedNotes !== undefined && trimmedNotes.length > 0 ? trimmedNotes : null,
+      createdAt,
+    );
+    await db.runAsync(`UPDATE coaching_slots SET is_booked = 1 WHERE id = ?;`, slotId);
+  });
+
+  const booking = await db.getFirstAsync<CoachingBookingRow>(
+    `SELECT id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+            client_notes, coach_notes, status, sync_status, created_at
+     FROM coaching_bookings WHERE id = ? LIMIT 1;`,
+    id,
+  );
+  if (booking === null) {
+    throw new Error('A foglalás létrehozása sikertelen.');
+  }
+  return toCoachingBooking(booking);
+}
+
+/**
+ * Cancels a booking and frees its slot so someone else can book the time again.
+ * Marks the row `local_dirty` for the coach push. Returns true when a booking
+ * was cancelled (false when it was missing or already cancelled).
+ */
+export async function cancelCoachingBooking(
+  db: SQLiteDatabase,
+  bookingId: string,
+): Promise<boolean> {
+  const row = await db.getFirstAsync<{ slot_id: string; status: CoachingBookingStatus }>(
+    'SELECT slot_id, status FROM coaching_bookings WHERE id = ? LIMIT 1;',
+    bookingId,
+  );
+  if (row === null || row.status === 'cancelled') {
+    return false;
+  }
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE coaching_bookings
+         SET status = 'cancelled', sync_status = 'local_dirty'
+       WHERE id = ?;`,
+      bookingId,
+    );
+    await db.runAsync('UPDATE coaching_slots SET is_booked = 0 WHERE id = ?;', row.slot_id);
+  });
+  return true;
+}
+
+/** Bookings still awaiting an upload to the coach backend. */
+export async function getDirtyCoachingBookings(
+  db: SQLiteDatabase,
+  userId: string = USER_PROFILE_ID,
+): Promise<CoachingBooking[]> {
+  const rows = await db.getAllAsync<CoachingBookingRow>(
+    `SELECT id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+            client_notes, coach_notes, status, sync_status, created_at
+     FROM coaching_bookings
+     WHERE user_id = ? AND sync_status = 'local_dirty'
+     ORDER BY starts_at;`,
+    userId,
+  );
+  return rows.map(toCoachingBooking);
+}
+
+/** Flips the given bookings to `synced` atomically. Returns the rows changed. */
+export async function markCoachingBookingsSynced(
+  db: SQLiteDatabase,
+  bookingIds: readonly string[],
+): Promise<number> {
+  if (bookingIds.length === 0) {
+    return 0;
+  }
+  const placeholders = bookingIds.map(() => '?').join(', ');
+  let changes = 0;
+  await db.withTransactionAsync(async () => {
+    const result = await db.runAsync(
+      `UPDATE coaching_bookings SET sync_status = 'synced' WHERE id IN (${placeholders});`,
+      ...bookingIds,
+    );
+    changes = result.changes;
+  });
+  return changes;
 }
 
 // --- Session logs -----------------------------------------------------------
