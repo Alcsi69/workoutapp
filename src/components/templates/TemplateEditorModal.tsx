@@ -138,9 +138,19 @@ export function TemplateEditorModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
-      <Pressable style={styles.backdrop} onPress={close}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+    <>
+      <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
+        {/* Backdrop is a sibling of the sheet so it never steals scroll gestures. */}
+        <View style={styles.overlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={close}
+            accessibilityRole="button"
+            accessibilityLabel={hu.templateEditor.cancel}
+          />
+
+          {/* Claims taps that miss the children so they never close via backdrop. */}
+          <View style={styles.sheet} onStartShouldSetResponder={() => true}>
           <View style={styles.headerRow}>
             <Text style={styles.title}>{hu.templateEditor.title}</Text>
             <Pressable accessibilityRole="button" onPress={close} style={styles.closeButton}>
@@ -151,7 +161,9 @@ export function TemplateEditorModal({
           <ScrollView
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
+            nestedScrollEnabled
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
           >
             <Text style={styles.label}>{hu.templateEditor.nameLabel}</Text>
@@ -238,27 +250,35 @@ export function TemplateEditorModal({
               loading={saving}
             />
           </ScrollView>
-        </Pressable>
-      </Pressable>
+          </View>
+        </View>
+      </Modal>
 
+      {/*
+       * Rendered as a SIBLING of the editor's Modal: nesting a Modal inside
+       * another Modal is unreliable on Android. When this picker closes the tab
+       * bar / header styles behind it can otherwise go stale.
+       */}
       <ExercisePickerModal
         visible={pickerVisible}
         catalog={catalog}
         onPick={addExercise}
         onClose={() => setPickerVisible(false)}
       />
-    </Modal>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  overlay: {
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: colors.overlay,
   },
   sheet: {
-    maxHeight: '88%',
+    // Explicit height (not just maxHeight) so the flex:1 body scrolls on Android.
+    height: '88%',
+    overflow: 'hidden',
     backgroundColor: colors.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
@@ -266,7 +286,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxl,
+    paddingBottom: spacing.lg,
     gap: spacing.sm,
   },
   headerRow: {
@@ -291,6 +311,9 @@ const styles = StyleSheet.create({
     fontWeight: typography.weights.medium,
   },
   body: {
+    // Bounded scroll viewport inside the explicit-height sheet.
+    flex: 1,
+    minHeight: 0,
     marginTop: spacing.xs,
   },
   bodyContent: {

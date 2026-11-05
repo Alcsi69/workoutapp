@@ -25,14 +25,25 @@ export function BookingModal({ visible, slot, busy, onClose, onConfirm }: Bookin
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+      {/* Backdrop is a sibling of the sheet so it never steals scroll gestures. */}
+      <View style={styles.overlay}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel={hu.common.cancel}
+        />
+
+        {/* Claims taps that miss the children so they never close via backdrop. */}
+        <View style={styles.sheet} onStartShouldSetResponder={() => true}>
           <Text style={styles.title}>{hu.screens.booking.bookTitle}</Text>
 
           <ScrollView
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
+            nestedScrollEnabled
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
           >
             <View style={styles.pillRow}>
@@ -79,20 +90,22 @@ export function BookingModal({ visible, slot, busy, onClose, onConfirm }: Bookin
             onPress={() => onConfirm(notes)}
           />
           <Button label={hu.common.cancel} variant="secondary" onPress={onClose} disabled={busy} />
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  overlay: {
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: colors.overlay,
   },
   sheet: {
-    maxHeight: '85%',
+    // Explicit height so the flex:1 body gets a bounded scroll viewport.
+    height: '88%',
+    overflow: 'hidden',
     backgroundColor: colors.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
@@ -109,7 +122,9 @@ const styles = StyleSheet.create({
     fontWeight: typography.weights.semibold,
   },
   body: {
-    flexGrow: 0,
+    // Bounded scroll viewport inside the explicit-height sheet.
+    flex: 1,
+    minHeight: 0,
   },
   bodyContent: {
     gap: spacing.sm,

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
+  FlatList,
   Modal,
   Pressable,
   ScrollView,
@@ -109,6 +110,9 @@ function ExerciseRow({
     </>
   );
 
+  // Browse-only mode (catalog viewer) renders a plain View so it can never
+  // intercept the list's vertical pan gesture; interactive rows delay their
+  // press-in so a scroll-start drag is never eaten as a tap.
   if (onPress === undefined) {
     return <View style={styles.row}>{body}</View>;
   }
@@ -116,6 +120,7 @@ function ExerciseRow({
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
+      unstable_pressDelay={50}
       style={({ pressed }) => [styles.row, pressed ? styles.pressed : null]}
     >
       {body}
@@ -217,195 +222,227 @@ export function ExercisePickerModal({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
-      <Pressable style={styles.backdrop} onPress={close}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
-          <View style={styles.headerRow}>
-            <Text style={styles.title}>{title}</Text>
-            <Pressable accessibilityRole="button" onPress={close} style={styles.closeButton}>
-              <Text style={styles.closeLabel}>{hu.common.cancel}</Text>
-            </Pressable>
+      {/*
+       * Android: the backdrop must be a SIBLING of the sheet, never its parent.
+       * A parent Pressable swallows the sheet's vertical pan/scroll gestures.
+       * The sheet also gets an explicit height (not just maxHeight) so its
+       * flex:1 FlatList resolves a bounded scroll viewport.
+       */}
+      <View style={styles.overlay}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={close}
+          accessibilityRole="button"
+          accessibilityLabel={hu.common.cancel}
+        />
+
+        {/* A plain View claims taps that miss its children so a tap on the
+            sheet's own background never reaches the backdrop; it does NOT become
+            the pan responder, so the FlatList below still scrolls on Android. */}
+        <View style={styles.sheet} onStartShouldSetResponder={() => true}>
+          <View style={styles.headerFixed}>
+            <View style={styles.headerRow}>
+              <Text style={styles.title}>{title}</Text>
+              <Pressable accessibilityRole="button" onPress={close} style={styles.closeButton}>
+                <Text style={styles.closeLabel}>{hu.common.cancel}</Text>
+              </Pressable>
+            </View>
+
+            {header}
+
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder={hu.picker.searchPlaceholder}
+              placeholderTextColor={colors.textMuted}
+              selectionColor={colors.accent}
+              autoCorrect={false}
+              style={styles.search}
+            />
+
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              style={styles.filterBar}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+            >
+              <Chip
+                label={hu.picker.all}
+                selected={muscleGroup === null}
+                onPress={() => setMuscleGroup(null)}
+              />
+              {MUSCLE_GROUPS.map((group) => (
+                <Chip
+                  key={group}
+                  label={hu.picker.muscleGroups[group]}
+                  selected={muscleGroup === group}
+                  onPress={() => setMuscleGroup(muscleGroup === group ? null : group)}
+                />
+              ))}
+            </ScrollView>
+
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              style={styles.filterBar}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+            >
+              <Chip
+                label={hu.picker.all}
+                selected={equipment === null}
+                onPress={() => setEquipment(null)}
+              />
+              {EQUIPMENT_FILTERS.map((filter) => (
+                <Chip
+                  key={filter}
+                  label={hu.picker.equipmentFilters[filter]}
+                  selected={equipment === filter}
+                  onPress={() => setEquipment(equipment === filter ? null : filter)}
+                />
+              ))}
+            </ScrollView>
+
+            <View style={styles.countRow}>
+              <Text style={styles.count}>
+                {mainList.length + (showPinned ? pinned.length : 0)} {hu.picker.resultCount}
+              </Text>
+            </View>
           </View>
 
-          {header}
-
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder={hu.picker.searchPlaceholder}
-            placeholderTextColor={colors.textMuted}
-            selectionColor={colors.accent}
-            autoCorrect={false}
-            style={styles.search}
-          />
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterRow}
-          >
-            <Chip
-              label={hu.picker.all}
-              selected={muscleGroup === null}
-              onPress={() => setMuscleGroup(null)}
-            />
-            {MUSCLE_GROUPS.map((group) => (
-              <Chip
-                key={group}
-                label={hu.picker.muscleGroups[group]}
-                selected={muscleGroup === group}
-                onPress={() => setMuscleGroup(muscleGroup === group ? null : group)}
-              />
-            ))}
-          </ScrollView>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterRow}
-          >
-            <Chip
-              label={hu.picker.all}
-              selected={equipment === null}
-              onPress={() => setEquipment(null)}
-            />
-            {EQUIPMENT_FILTERS.map((filter) => (
-              <Chip
-                key={filter}
-                label={hu.picker.equipmentFilters[filter]}
-                selected={equipment === filter}
-                onPress={() => setEquipment(equipment === filter ? null : filter)}
-              />
-            ))}
-          </ScrollView>
-
-          <View style={styles.countRow}>
-            <Text style={styles.count}>
-              {mainList.length + (showPinned ? pinned.length : 0)} {hu.picker.resultCount}
-            </Text>
-          </View>
-
-          <ScrollView
+          <FlatList
             style={styles.list}
             contentContainerStyle={styles.listContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            {showPinned ? (
-              <>
-                <Text style={styles.groupTitle}>{hu.picker.recommended}</Text>
-                {pinned.map((exercise) => (
-                  <ExerciseRow
-                    key={`pinned_${exercise.id}`}
-                    exercise={exercise}
-                    pinned
-                    onPress={onPick === undefined ? undefined : () => onPick(exercise.id)}
-                  />
-                ))}
-                {mainList.length > 0 ? (
-                  <Text style={styles.groupTitle}>{hu.picker.switchesTo}</Text>
-                ) : null}
-              </>
-            ) : null}
-
-            {mainList.map((exercise) => (
+            data={mainList}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
               <ExerciseRow
-                key={exercise.id}
-                exercise={exercise}
-                onPress={onPick === undefined ? undefined : () => onPick(exercise.id)}
+                exercise={item}
+                onPress={onPick === undefined ? undefined : () => onPick(item.id)}
               />
-            ))}
-
-            {mainList.length === 0 && (!showPinned || pinned.length === 0) ? (
-              <Text style={styles.empty}>{hu.picker.noResults}</Text>
-            ) : null}
-          </ScrollView>
-
-          {allowCreate ? (
-            creating ? (
-              <View style={styles.form}>
-                <Text style={styles.formTitle}>{hu.picker.customTitle}</Text>
-                <Text style={styles.label}>{hu.picker.customNameLabel}</Text>
-                <TextInput
-                  value={formNameHu}
-                  onChangeText={setFormNameHu}
-                  placeholder={hu.picker.customNamePlaceholder}
-                  placeholderTextColor={colors.textMuted}
-                  selectionColor={colors.accent}
-                  style={styles.input}
-                />
-                <Text style={styles.label}>{hu.picker.customNameEnLabel}</Text>
-                <TextInput
-                  value={formNameEn}
-                  onChangeText={setFormNameEn}
-                  placeholder={hu.picker.customNameEnPlaceholder}
-                  placeholderTextColor={colors.textMuted}
-                  selectionColor={colors.accent}
-                  autoCorrect={false}
-                  style={styles.input}
-                />
-                <Text style={styles.label}>{hu.picker.customEquipmentLabel}</Text>
-                <View style={styles.chipWrap}>
-                  {EQUIPMENT_FILTERS.map((filter) => (
-                    <Chip
-                      key={filter}
-                      label={hu.picker.equipmentFilters[filter]}
-                      selected={formEquipment === filter}
-                      onPress={() => setFormEquipment(filter)}
+            )}
+            ListHeaderComponent={
+              showPinned ? (
+                <>
+                  <Text style={styles.groupTitle}>{hu.picker.recommended}</Text>
+                  {pinned.map((exercise) => (
+                    <ExerciseRow
+                      key={`pinned_${exercise.id}`}
+                      exercise={exercise}
+                      pinned
+                      onPress={onPick === undefined ? undefined : () => onPick(exercise.id)}
                     />
                   ))}
-                </View>
-                <Text style={styles.label}>{hu.picker.customMuscleLabel}</Text>
-                <View style={styles.chipWrap}>
-                  {MUSCLE_GROUPS.map((group) => (
-                    <Chip
-                      key={group}
-                      label={hu.picker.muscleGroups[group]}
-                      selected={formGroup === group}
-                      onPress={() => setFormGroup(group)}
+                  {mainList.length > 0 ? (
+                    <Text style={styles.groupTitle}>{hu.picker.switchesTo}</Text>
+                  ) : null}
+                </>
+              ) : undefined
+            }
+            ListEmptyComponent={
+              mainList.length === 0 && (!showPinned || pinned.length === 0) ? (
+                <Text style={styles.empty}>{hu.picker.noResults}</Text>
+              ) : undefined
+            }
+            ListFooterComponent={
+              allowCreate ? (
+                creating ? (
+                  <View style={styles.form}>
+                    <Text style={styles.formTitle}>{hu.picker.customTitle}</Text>
+                    <Text style={styles.label}>{hu.picker.customNameLabel}</Text>
+                    <TextInput
+                      value={formNameHu}
+                      onChangeText={setFormNameHu}
+                      placeholder={hu.picker.customNamePlaceholder}
+                      placeholderTextColor={colors.textMuted}
+                      selectionColor={colors.accent}
+                      style={styles.input}
                     />
-                  ))}
-                </View>
-                {formError !== null ? <Text style={styles.error}>{formError}</Text> : null}
-                <View style={styles.formActions}>
+                    <Text style={styles.label}>{hu.picker.customNameEnLabel}</Text>
+                    <TextInput
+                      value={formNameEn}
+                      onChangeText={setFormNameEn}
+                      placeholder={hu.picker.customNameEnPlaceholder}
+                      placeholderTextColor={colors.textMuted}
+                      selectionColor={colors.accent}
+                      autoCorrect={false}
+                      style={styles.input}
+                    />
+                    <Text style={styles.label}>{hu.picker.customEquipmentLabel}</Text>
+                    <View style={styles.chipWrap}>
+                      {EQUIPMENT_FILTERS.map((filter) => (
+                        <Chip
+                          key={filter}
+                          label={hu.picker.equipmentFilters[filter]}
+                          selected={formEquipment === filter}
+                          onPress={() => setFormEquipment(filter)}
+                        />
+                      ))}
+                    </View>
+                    <Text style={styles.label}>{hu.picker.customMuscleLabel}</Text>
+                    <View style={styles.chipWrap}>
+                      {MUSCLE_GROUPS.map((group) => (
+                        <Chip
+                          key={group}
+                          label={hu.picker.muscleGroups[group]}
+                          selected={formGroup === group}
+                          onPress={() => setFormGroup(group)}
+                        />
+                      ))}
+                    </View>
+                    {formError !== null ? <Text style={styles.error}>{formError}</Text> : null}
+                    <View style={styles.formActions}>
+                      <Button
+                        label={hu.picker.customCreate}
+                        onPress={() => {
+                          void handleCreate();
+                        }}
+                        loading={saving}
+                      />
+                      <Button
+                        label={hu.picker.customCancel}
+                        variant="secondary"
+                        onPress={() => {
+                          setCreating(false);
+                          resetForm();
+                        }}
+                      />
+                    </View>
+                  </View>
+                ) : (
                   <Button
-                    label={hu.picker.customCreate}
-                    onPress={() => {
-                      void handleCreate();
-                    }}
-                    loading={saving}
-                  />
-                  <Button
-                    label={hu.picker.customCancel}
+                    label={hu.picker.addCustom}
                     variant="secondary"
-                    onPress={() => {
-                      setCreating(false);
-                      resetForm();
-                    }}
+                    onPress={() => setCreating(true)}
                   />
-                </View>
-              </View>
-            ) : (
-              <Button
-                label={hu.picker.addCustom}
-                variant="secondary"
-                onPress={() => setCreating(true)}
-              />
-            )
-          ) : null}
-        </Pressable>
-      </Pressable>
+                )
+              ) : undefined
+            }
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            removeClippedSubviews={false}
+            showsVerticalScrollIndicator={false}
+          />
+        </View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  // Root overlay hosts the backdrop and the sheet as SIBLINGS (Android scroll fix).
+  overlay: {
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: colors.overlay,
   },
   sheet: {
-    maxHeight: '90%',
+    // Explicit height (not just maxHeight) so a flex:1 child gets a bounded
+    // scroll viewport on Android.
+    height: '88%',
+    overflow: 'hidden',
     backgroundColor: colors.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
@@ -413,7 +450,12 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxl,
+    paddingBottom: spacing.lg,
+    gap: spacing.sm,
+  },
+  // Search + filter chips: fixed, never compressed by the list below.
+  headerFixed: {
+    flexShrink: 0,
     gap: spacing.sm,
   },
   headerRow: {
@@ -447,9 +489,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
   },
+  filterBar: {
+    // Never let the FlatList below crush the chip rows vertically.
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 42,
+  },
   filterRow: {
-    gap: spacing.xs,
-    paddingVertical: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: 4,
   },
   countRow: {
     flexDirection: 'row',
@@ -460,11 +510,13 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.xs,
   },
   list: {
-    flexGrow: 0,
+    // flex:1 + minHeight:0 gives the FlatList a bounded viewport inside the sheet.
+    flex: 1,
+    minHeight: 0,
   },
   listContent: {
-    gap: spacing.sm,
-    paddingBottom: spacing.md,
+    paddingBottom: 32,
+    gap: 10,
   },
   groupTitle: {
     marginTop: spacing.sm,

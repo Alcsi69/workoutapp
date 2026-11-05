@@ -58,8 +58,25 @@ export function PlateCalculatorModal({
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+      {/* Backdrop is a sibling of the sheet so it never steals scroll gestures. */}
+      <View style={styles.overlay}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel={hu.plate.close}
+        />
+
+        {/* Claims taps that miss the children so they never close via backdrop. */}
+        <View style={styles.sheet} onStartShouldSetResponder={() => true}>
+          <ScrollView
+            style={styles.body}
+            contentContainerStyle={styles.bodyContent}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
+          >
           <View style={styles.headerRow}>
             <View style={styles.headerText}>
               <Text style={styles.title}>{hu.plate.title}</Text>
@@ -110,6 +127,8 @@ export function PlateCalculatorModal({
           ) : (
             <ScrollView
               horizontal
+              nestedScrollEnabled
+              style={styles.plateStripScroll}
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.plateStrip}
             >
@@ -138,19 +157,23 @@ export function PlateCalculatorModal({
           ) : null}
 
           <Button label={hu.plate.close} variant="secondary" onPress={onClose} />
-        </Pressable>
-      </Pressable>
+          </ScrollView>
+        </View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  overlay: {
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: colors.overlay,
   },
   sheet: {
+    // Explicit height so the flex:1 body gets a bounded scroll viewport.
+    height: '88%',
+    overflow: 'hidden',
     backgroundColor: colors.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
@@ -158,8 +181,15 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     paddingTop: spacing.lg,
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxl,
+    paddingBottom: spacing.lg,
+  },
+  body: {
+    flex: 1,
+    minHeight: 0,
+  },
+  bodyContent: {
     gap: spacing.md,
+    paddingBottom: spacing.md,
   },
   headerRow: {
     flexDirection: 'row',
@@ -233,6 +263,11 @@ const styles = StyleSheet.create({
   empty: {
     color: colors.textMuted,
     fontSize: typography.sizes.sm,
+  },
+  plateStripScroll: {
+    // Keep the plate row from collapsing inside the vertically-scrolling sheet.
+    flexGrow: 0,
+    flexShrink: 0,
   },
   plateStrip: {
     flexDirection: 'row',

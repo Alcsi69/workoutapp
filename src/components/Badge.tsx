@@ -81,14 +81,24 @@ export function LoadBadge({ label, score }: LoadBadgeProps) {
   return <Pill label={`${label} ${score}/5`} tone={loadTone(score)} />;
 }
 
+/**
+ * Chip label line height. Kept explicit (and paired with includeFontPadding:
+ * false below) so Hungarian accents — Ö, ő, ű, á — can never be clipped
+ * vertically when a chip is laid out tight inside a horizontal strip.
+ */
+const CHIP_LINE_HEIGHT = Math.round(typography.sizes.sm * typography.lineHeights.normal);
+
 const styles = StyleSheet.create({
   chip: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    minHeight: 34,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.borderStrong,
     backgroundColor: colors.surfaceInput,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   chipSelected: {
     backgroundColor: colors.accentMuted,
@@ -101,6 +111,8 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: typography.sizes.sm,
     fontWeight: typography.weights.medium,
+    lineHeight: CHIP_LINE_HEIGHT,
+    includeFontPadding: false,
   },
   chipLabelSelected: {
     color: colors.accent,

@@ -29,8 +29,17 @@ export function JsonPreviewModal({ visible, title, value, onClose }: JsonPreview
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+      {/* Backdrop is a sibling of the sheet so it never steals scroll gestures. */}
+      <View style={styles.overlay}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel={hu.sync.close}
+        />
+
+        {/* Claims taps that miss the children so they never close via backdrop. */}
+        <View style={styles.sheet} onStartShouldSetResponder={() => true}>
           <View style={styles.headerRow}>
             <Text style={styles.title}>{title ?? hu.sync.previewTitle}</Text>
             <Pressable accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
@@ -41,27 +50,30 @@ export function JsonPreviewModal({ visible, title, value, onClose }: JsonPreview
           <ScrollView
             style={styles.body}
             contentContainerStyle={styles.bodyContent}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
             <Text selectable style={styles.code}>
               {text}
             </Text>
           </ScrollView>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  overlay: {
     flex: 1,
     justifyContent: 'flex-end',
     backgroundColor: colors.overlay,
   },
   sheet: {
-    maxHeight: '85%',
-    minHeight: '55%',
+    // Explicit height so the flex:1 body gets a bounded scroll viewport.
+    height: '88%',
+    overflow: 'hidden',
     backgroundColor: colors.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
@@ -95,6 +107,7 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
+    minHeight: 0,
     backgroundColor: colors.surfaceInput,
     borderColor: colors.border,
     borderWidth: 1,

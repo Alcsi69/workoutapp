@@ -24,6 +24,7 @@ export function SetTypeSelector({ value, onChange }: SetTypeSelectorProps) {
   return (
     <ScrollView
       horizontal
+      style={styles.stripScroll}
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.strip}
       keyboardShouldPersistTaps="handled"
@@ -61,6 +62,7 @@ export function RpeSelector({ value, onChange }: RpeSelectorProps) {
       <Text style={styles.label}>{hu.logger.rpeLabel}</Text>
       <ScrollView
         horizontal
+        style={styles.stripScroll}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.strip}
         keyboardShouldPersistTaps="handled"
@@ -90,9 +92,15 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
+  stripScroll: {
+    // Keep the chip strip from being squeezed by the rows below it.
+    flexGrow: 0,
+    flexShrink: 0,
+  },
   strip: {
     flexDirection: 'row',
-    gap: spacing.xs,
-    paddingVertical: spacing.xs,
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: 4,
   },
 });
