@@ -1,0 +1,29 @@
+# Build context only — keeps node_modules, the git history and the local
+# (already compiled) build output out of the image build.
+node_modules
+server/node_modules
+dist
+server/dist
+.verify-build
+.expo
+web-build
+.git
+.gitignore
+assets
+ios
+android
+
+# Local runtime state: never bake a database into an image.
+server/data
+
+# Local env / editor noise
+.env*.local
+.DS_Store
+*.tsbuildinfo
+
+# Docs and mobile tooling are irrelevant to the server image.
+docs
+scripts
+eslint.config.js
+metro.config.js
+expo-env.d.ts

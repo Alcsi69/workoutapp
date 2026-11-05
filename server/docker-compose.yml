@@ -1,0 +1,56 @@
+# WorkoutApp coach backend — single-container deployment.
+#
+#   cd server
+#   mkdir -p data && sudo chown -R 1000:1000 data   # DB dir must be writable by the container's `node` user
+#   docker compose up -d --build
+#
+# Serves the REST API (/api), the admin portal (/admin) and the SQLite database
+# from one process on port 4000.
+
+name: workoutapp-backend
+
+services:
+  workout-backend:
+    build:
+      # Repo root, not server/: the API build compiles the shared mobile
+      # contracts from ../src (see server/tsconfig.json include list).
+      context: ..
+      dockerfile: server/Dockerfile
+    image: workout-backend:latest
+    container_name: workout-backend
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
+
+    ports:
+      # Use "127.0.0.1:4000:4000" when Caddy/Nginx runs on the host: the API stays
+      # off the public internet and is only reachable through HTTPS.
+      - "4000:4000"
+
+    environment:
+      PORT: "4000"
+      HOST: "0.0.0.0"
+      TZ: "Europe/Budapest"
+
+    volumes:
+      # CRITICAL: persists coach-platform.db (+ its -wal/-shm files) across
+      # rebuilds, restarts and image updates. Host ./data == repo server/data.
+      # Do not remove this line — the DB lives on the container filesystem otherwise.
+      - ./data:/app/server/data
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/health').then(function (r) { process.exit(r.ok ? 0 : 1); }).catch(function () { process.exit(1); })"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
