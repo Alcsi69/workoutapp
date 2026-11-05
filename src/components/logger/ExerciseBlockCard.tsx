@@ -16,8 +16,10 @@ import {
   exactPreviousSet,
   findPersonalRecords,
   prefillValues,
+  renumberDrafts,
 } from '../../services/loggerDrafts';
 import type { SetDraft } from '../../services/loggerDrafts';
+import { shouldOfferPlateCalculator } from '../../services/plateCalculator';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
 import type {
@@ -47,14 +49,27 @@ interface ExerciseBlockCardProps {
   onPersistSet: (block: SessionExerciseBlock, draft: SetDraft) => Promise<string>;
   onDeleteSet: (draft: SetDraft) => Promise<void>;
   onSubstitute: (block: SessionExerciseBlock) => void;
+  /** Removes a persisted set row mid-workout (the block's sets re-index behind it). */
+  onRemoveSet?: (block: SessionExerciseBlock, setNumber: number) => Promise<void>;
+  /** Opens the plate calculator for a barbell-family block, prefilled with a weight. */
+  onOpenPlates?: (block: SessionExerciseBlock, initialWeightKg: number | null) => void;
+  /** Moves the block one slot earlier in the session. */
+  onMoveUp?: (block: SessionExerciseBlock) => void;
+  /** Moves the block one slot later in the session. */
+  onMoveDown?: (block: SessionExerciseBlock) => void;
+  /** Removes the whole exercise block from the session. */
+  onRemoveBlock?: (block: SessionExerciseBlock) => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
 }
 
 /**
  * One exercise block in the logger: header (target reps, knee/axial badges,
- * substitute action), the "Előző edzés" memory for this exercise (last sets, a
- * progressive overload suggestion, all-time best 1RM, and a one-tap prefill),
- * and an editable row per set with an "Új PR!" badge. Draft state lives here so
- * typing stays responsive; every completion writes straight through to SQLite.
+ * substitute + reorder/remove actions), the "Előző edzés" memory for this
+ * exercise (last sets, a progressive overload suggestion, all-time best 1RM, and
+ * a one-tap prefill), the plate-calculator trigger, and an editable row per set
+ * with an "Új PR!" badge. Draft state lives here so typing stays responsive;
+ * every completion writes straight through to SQLite.
  */
 export function ExerciseBlockCard({
   block,
@@ -63,6 +78,13 @@ export function ExerciseBlockCard({
   onPersistSet,
   onDeleteSet,
   onSubstitute,
+  onRemoveSet,
+  onOpenPlates,
+  onMoveUp,
+  onMoveDown,
+  onRemoveBlock,
+  canMoveUp = false,
+  canMoveDown = false,
 }: ExerciseBlockCardProps) {
   const previousSets = lastPerformance?.sets ?? NO_PREVIOUS_SETS;
   const [drafts, setDrafts] = useState<SetDraft[]>(() =>
@@ -138,6 +160,43 @@ export function ExerciseBlockCard({
   };
 
   const target = `${block.targetSets ?? 1} × ${block.targetReps ?? '—'}`;
+  const showPlates = shouldOfferPlateCalculator(block.exercise);
+
+  /** Weight to prefill the plate sheet with: the first open row's weight, else the first row's. */
+  const plateWeight = ((): number | null => {
+    const open = drafts.find((draft) => !draft.completed && draft.weight.trim().length > 0);
+    const source = open ?? drafts[0];
+    if (source === undefined) {
+      return null;
+    }
+    const value = Number.parseFloat(source.weight.replace(',', '.'));
+    return Number.isFinite(value) && value > 0 ? value : null;
+  })();
+
+  /** Removes a set row mid-workout: persisted rows drop from the DB, then renumbers. */
+  const handleRemoveSet = async (draft: SetDraft): Promise<void> => {
+    if (busyKey !== null) {
+      return;
+    }
+    setBusyKey(draft.key);
+    try {
+      if (draft.completed && draft.setLogId !== null) {
+        if (onRemoveSet !== undefined) {
+          await onRemoveSet(block, draft.setNumber);
+        } else {
+          await onDeleteSet(draft);
+        }
+      }
+      setDrafts((previous) =>
+        renumberDrafts(
+          block.id,
+          previous.filter((row) => row.key !== draft.key),
+        ),
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  };
 
   return (
     <View style={styles.card}>
@@ -145,6 +204,62 @@ export function ExerciseBlockCard({
         <View style={styles.headerTop}>
           <Text style={styles.exerciseName}>{block.exercise.nameHu}</Text>
           <Text style={styles.target}>{target}</Text>
+        </View>
+        <View style={styles.manageRow}>
+          {showPlates && onOpenPlates !== undefined ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => onOpenPlates(block, plateWeight)}
+              style={({ pressed }) => [styles.manageButton, pressed ? styles.pressed : null]}
+            >
+              <Text style={styles.manageLabel}>{hu.logger.plateCalculator}</Text>
+            </Pressable>
+          ) : null}
+          {onMoveUp !== undefined ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !canMoveUp }}
+              disabled={!canMoveUp}
+              onPress={() => onMoveUp(block)}
+              style={({ pressed }) => [
+                styles.manageButton,
+                !canMoveUp ? styles.manageDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+            >
+              <Text style={styles.manageLabel}>↑ {hu.logger.moveUp}</Text>
+            </Pressable>
+          ) : null}
+          {onMoveDown !== undefined ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !canMoveDown }}
+              disabled={!canMoveDown}
+              onPress={() => onMoveDown(block)}
+              style={({ pressed }) => [
+                styles.manageButton,
+                !canMoveDown ? styles.manageDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+            >
+              <Text style={styles.manageLabel}>↓ {hu.logger.moveDown}</Text>
+            </Pressable>
+          ) : null}
+          {onRemoveBlock !== undefined ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => onRemoveBlock(block)}
+              style={({ pressed }) => [
+                styles.manageButton,
+                styles.manageDanger,
+                pressed ? styles.pressed : null,
+              ]}
+            >
+              <Text style={[styles.manageLabel, styles.manageDangerLabel]}>
+                {hu.logger.removeExercise}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
         <View style={styles.badgeRow}>
           <LoadBadge label={hu.screens.load.kneeShort} score={block.exercise.kneeStressScore} />
@@ -213,20 +328,32 @@ export function ExerciseBlockCard({
                 <Text style={styles.setTitle}>
                   {draft.setNumber}. {hu.logger.set}
                 </Text>
-                <Pressable
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: draft.completed, busy: busyKey === draft.key }}
-                  onPress={() => {
-                    void handleToggle(draft);
-                  }}
-                  style={({ pressed }) => [
-                    styles.checkbox,
-                    draft.completed ? styles.checkboxOn : null,
-                    pressed ? styles.pressed : null,
-                  ]}
-                >
-                  <Text style={styles.checkboxMark}>{draft.completed ? '✓' : ''}</Text>
-                </Pressable>
+                <View style={styles.setHeadActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${hu.logger.removeSet} (${draft.setNumber}.)`}
+                    onPress={() => {
+                      void handleRemoveSet(draft);
+                    }}
+                    style={({ pressed }) => [styles.removeSet, pressed ? styles.pressed : null]}
+                  >
+                    <Text style={styles.removeSetLabel}>✕</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: draft.completed, busy: busyKey === draft.key }}
+                    onPress={() => {
+                      void handleToggle(draft);
+                    }}
+                    style={({ pressed }) => [
+                      styles.checkbox,
+                      draft.completed ? styles.checkboxOn : null,
+                      pressed ? styles.pressed : null,
+                    ]}
+                  >
+                    <Text style={styles.checkboxMark}>{draft.completed ? '✓' : ''}</Text>
+                  </Pressable>
+                </View>
               </View>
 
               {previous !== null ? (
@@ -309,6 +436,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.sm,
+  },
+  manageRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  manageButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceInput,
+  },
+  manageDisabled: {
+    opacity: 0.4,
+  },
+  manageDanger: {
+    borderColor: colors.danger,
+  },
+  manageLabel: {
+    color: colors.textSecondary,
+    fontSize: typography.sizes.xs,
+    fontWeight: typography.weights.medium,
+  },
+  manageDangerLabel: {
+    color: colors.danger,
   },
   exerciseName: {
     flex: 1,
@@ -417,6 +571,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  setHeadActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  removeSet: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  removeSetLabel: {
+    color: colors.textMuted,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.bold,
   },
   setTitle: {
     color: colors.textSecondary,

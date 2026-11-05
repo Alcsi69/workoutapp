@@ -44,11 +44,6 @@ export function SyncCard() {
     }, []),
   );
 
-  const refreshCount = useCallback(async (): Promise<void> => {
-    const db = await getDatabase();
-    setDirtyCount(await countDirtySessions(db));
-  }, []);
-
   const handleSync = async (): Promise<void> => {
     setSyncing(true);
     setMessage(null);

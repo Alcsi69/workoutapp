@@ -46,6 +46,8 @@ const {
   syncPendingWorkouts,
   buildSyncBatchPayload,
 } = require('../.verify-build/services/syncService.js');
+const plateCalculator = require('../.verify-build/services/plateCalculator.js');
+const backupService = require('../.verify-build/services/backupService.js');
 
 /** Thin async facade over node:sqlite matching the expo-sqlite API surface we use. */
 function createDatabase() {
@@ -1619,6 +1621,225 @@ async function main() {
     assert.equal(records.a, 133.3);
     assert.equal(records.b, 136.7);
   });
+
+  console.log('\nplate calculator (phase 6)');
+
+  await check('calculatePlatesPerSide loads exact plates for a barbell weight', () => {
+    const calc = plateCalculator.calculatePlatesPerSide(100, 20);
+    // 100 - 20 = 80 over two sides -> 40 kg/side = 25 + 15.
+    assert.equal(calc.achievableWeightKg, 100);
+    assert.equal(calc.exact, true);
+    assert.equal(calc.shortfallKg, 0);
+    assert.deepEqual(calc.platesPerSide, [
+      { plateKg: 25, countPerSide: 1 },
+      { plateKg: 15, countPerSide: 1 },
+    ]);
+    assert.equal(plateCalculator.totalPlateCount(calc), 4);
+  });
+
+  await check('calculatePlatesPerSide reports the closest weight below an unloadable target', () => {
+    const calc = plateCalculator.calculatePlatesPerSide(43, 20);
+    // 11.5 kg/side -> 10 + 1.25 = 11.25 -> 42.5 kg total.
+    assert.equal(calc.achievableWeightKg, 42.5);
+    assert.equal(calc.exact, false);
+    assert.equal(calc.shortfallKg, 0.5);
+    assert.deepEqual(calc.platesPerSide, [
+      { plateKg: 10, countPerSide: 1 },
+      { plateKg: 1.25, countPerSide: 1 },
+    ]);
+  });
+
+  await check('calculatePlatesPerSide handles bar-only and below-bar targets', () => {
+    const barOnly = plateCalculator.calculatePlatesPerSide(20, 20);
+    assert.deepEqual(barOnly.platesPerSide, []);
+    assert.equal(barOnly.achievableWeightKg, 20);
+    assert.equal(barOnly.exact, true);
+
+    const below = plateCalculator.calculatePlatesPerSide(15, 20);
+    assert.equal(below.achievableWeightKg, 20);
+    assert.equal(below.exact, false);
+    assert.equal(below.shortfallKg, 0);
+  });
+
+  await check('shouldOfferPlateCalculator gates the barbell family', () => {
+    assert.equal(plateCalculator.shouldOfferPlateCalculator({ equipment: 'barbell', id: 'bench_press' }), true);
+    assert.equal(plateCalculator.shouldOfferPlateCalculator({ equipment: 'specialty_bar', id: 'safety_bar_squat' }), true);
+    assert.equal(plateCalculator.shouldOfferPlateCalculator({ equipment: 'machine', id: 'belt_squat' }), true);
+    assert.equal(plateCalculator.shouldOfferPlateCalculator({ equipment: 'machine', id: 'hack_squat' }), false);
+    assert.equal(plateCalculator.shouldOfferPlateCalculator({ equipment: 'dumbbell', id: 'dumbbell_bench' }), false);
+  });
+
+  console.log('\nmid-workout mutation (phase 6)');
+
+  const mutTemplate = templates.find((template) => template.title === 'Upper A');
+  const mutSessionId = await repository.startSessionFromTemplate(db, mutTemplate);
+  const mutInitial = await repository.getSessionDetail(db, mutSessionId);
+  const initialBlockCount = mutInitial.exerciseBlocks.length;
+
+  await check('appendExerciseBlockToSession appends a block at the end', async () => {
+    const blockId = await repository.appendExerciseBlockToSession(db, mutSessionId, 'barbell_row');
+    const detail = await repository.getSessionDetail(db, mutSessionId);
+    assert.equal(detail.exerciseBlocks.length, initialBlockCount + 1);
+    const last = detail.exerciseBlocks[detail.exerciseBlocks.length - 1];
+    assert.equal(last.id, blockId);
+    assert.equal(last.exerciseId, 'barbell_row');
+    assert.equal(last.orderIndex, initialBlockCount);
+  });
+
+  await check('appendExerciseBlockToSession rejects an unknown exercise', async () => {
+    await assert.rejects(
+      () => repository.appendExerciseBlockToSession(db, mutSessionId, 'does_not_exist'),
+      /not in the catalog/,
+    );
+  });
+
+  await check('reorderSessionBlocks rewrites order_index for a permutation', async () => {
+    const before = (await repository.getSessionDetail(db, mutSessionId)).exerciseBlocks.map((b) => b.id);
+    const reversed = [...before].reverse();
+    await repository.reorderSessionBlocks(db, mutSessionId, reversed);
+    const after = (await repository.getSessionDetail(db, mutSessionId)).exerciseBlocks;
+    assert.deepEqual(after.map((b) => b.id), reversed);
+    assert.deepEqual(after.map((b) => b.orderIndex), after.map((_, index) => index));
+  });
+
+  await check('reorderSessionBlocks rejects a non-permutation', async () => {
+    await assert.rejects(
+      () => repository.reorderSessionBlocks(db, mutSessionId, ['not-a-block']),
+      /do not match/,
+    );
+  });
+
+  await check('removeExerciseBlockFromSession drops the block and re-indexes', async () => {
+    const before = (await repository.getSessionDetail(db, mutSessionId)).exerciseBlocks;
+    const victim = before[0];
+    const removed = await repository.removeExerciseBlockFromSession(db, victim.id);
+    assert.equal(removed, true);
+    const after = (await repository.getSessionDetail(db, mutSessionId)).exerciseBlocks;
+    assert.equal(after.length, before.length - 1);
+    assert.equal(after.some((b) => b.id === victim.id), false);
+    assert.deepEqual(after.map((b) => b.orderIndex), after.map((_, index) => index));
+  });
+
+  const setBlock = (await repository.getSessionDetail(db, mutSessionId)).exerciseBlocks[0];
+
+  await check('appendSetToBlock prefills and numbers appended sets', async () => {
+    const first = await repository.appendSetToBlock(db, setBlock.id);
+    assert.equal(first.setNumber, 1);
+    assert.equal(first.setType, 'working');
+    assert.equal(first.targetReps, setBlock.targetReps ?? '8-10');
+
+    const second = await repository.appendSetToBlock(db, setBlock.id);
+    assert.equal(second.setNumber, 2);
+    // Prefilled from the previous set in the block.
+    assert.equal(second.actualWeightKg, first.actualWeightKg);
+    assert.equal(second.actualReps, first.actualReps);
+    assert.equal(second.setType, first.setType);
+  });
+
+  await check('removeSetFromBlock deletes a set and re-indexes the rest', async () => {
+    const removed = await repository.removeSetFromBlock(db, setBlock.id, 1);
+    assert.equal(removed, true);
+    const remaining = raw
+      .prepare('SELECT set_number FROM set_logs WHERE block_id = ? ORDER BY set_number')
+      .all(setBlock.id);
+    assert.deepEqual(remaining.map((row) => row.set_number), [1]); // old set 2 slid down
+  });
+
+  await check('removeSetFromBlock is a no-op for a missing set number', async () => {
+    const removed = await repository.removeSetFromBlock(db, setBlock.id, 99);
+    assert.equal(removed, false);
+  });
+
+  await check('mutation helpers refuse a completed session', async () => {
+    await assert.rejects(
+      () => repository.appendSetToBlock(db, firstBlock.id),
+      /already completed/,
+    );
+    await assert.rejects(
+      () => repository.removeExerciseBlockFromSession(db, firstBlock.id),
+      /already completed/,
+    );
+    await assert.rejects(
+      () => repository.appendExerciseBlockToSession(db, lowerSessionId, 'barbell_row'),
+      /not active/,
+    );
+  });
+
+  console.log('\nfull backup + restore (phase 6)');
+
+  const snapshotJson = await backupService.exportFullDatabaseSnapshot(db);
+
+  await check('exportFullDatabaseSnapshot serializes a valid, complete snapshot', () => {
+    const parsed = JSON.parse(snapshotJson);
+    assert.equal(parsed.format, 'workoutapp.backup');
+    assert.equal(parsed.schemaVersion, SCHEMA_VERSION);
+    assert.ok(parsed.data.profile !== null);
+    assert.equal(parsed.data.profile.id, repository.USER_PROFILE_ID);
+    assert.ok(parsed.data.sessionLogs.length > 0);
+    assert.ok(parsed.data.setLogs.length > 0);
+    assert.ok(parsed.data.customTemplates.some((template) => template.id === customHack.id));
+    assert.ok(parsed.data.runningMetrics.length > 0);
+  });
+
+  const sourceCounts = {
+    sessions: raw.prepare('SELECT COUNT(*) AS c FROM session_logs').get().c,
+    blocks: raw.prepare('SELECT COUNT(*) AS c FROM session_exercise_blocks').get().c,
+    sets: raw.prepare('SELECT COUNT(*) AS c FROM set_logs').get().c,
+    runs: raw.prepare('SELECT COUNT(*) AS c FROM running_metrics').get().c,
+    customExercises: raw.prepare('SELECT COUNT(*) AS c FROM exercise_catalog WHERE is_custom = 1').get().c,
+  };
+
+  const { db: restoreDb, raw: restoreRaw } = createDatabase();
+  await migrate(restoreDb);
+  await backupService.importFullDatabaseSnapshot(restoreDb, snapshotJson);
+
+  await check('importFullDatabaseSnapshot restores the profile and constraints', async () => {
+    const profile = await repository.getUserProfile(restoreDb);
+    assert.ok(profile !== null);
+    assert.equal(profile.biometrics.weightKg, 78.5);
+    assert.equal(profile.trainingProfile.strengthDaysPerWeek, 4);
+    assert.equal(profile.constraints.jointLimitations.length, 1);
+    assert.equal(profile.constraints.jointLimitations[0].area, 'lower_back');
+  });
+
+  await check('importFullDatabaseSnapshot restores every session, block, set and run', () => {
+    assert.equal(restoreRaw.prepare('SELECT COUNT(*) AS c FROM session_logs').get().c, sourceCounts.sessions);
+    assert.equal(restoreRaw.prepare('SELECT COUNT(*) AS c FROM session_exercise_blocks').get().c, sourceCounts.blocks);
+    assert.equal(restoreRaw.prepare('SELECT COUNT(*) AS c FROM set_logs').get().c, sourceCounts.sets);
+    assert.equal(restoreRaw.prepare('SELECT COUNT(*) AS c FROM running_metrics').get().c, sourceCounts.runs);
+    assert.equal(
+      restoreRaw.prepare('SELECT COUNT(*) AS c FROM exercise_catalog WHERE is_custom = 1').get().c,
+      sourceCounts.customExercises,
+    );
+  });
+
+  await check('a restored database round-trips through the read helpers', async () => {
+    const history = await repository.getSessionHistory(restoreDb);
+    assert.ok(history.length > 0);
+    const bench = await repository.getLastPerformanceForExercises(restoreDb, ['bench_press']);
+    assert.equal(bench.get('bench_press').bestOneRepMaxKg, 124);
+    const progression = await repository.getExerciseProgressionStats(restoreDb, 'bench_press');
+    assert.equal(progression.length, 3);
+  });
+
+  await check('restored database has no foreign key violations', () => {
+    assert.deepEqual(restoreRaw.prepare('PRAGMA foreign_key_check').all(), []);
+  });
+
+  await check('importFullDatabaseSnapshot is atomic and leaves rows intact on bad input', async () => {
+    const before = raw.prepare('SELECT COUNT(*) AS c FROM session_logs').get().c;
+    await assert.rejects(
+      () => backupService.importFullDatabaseSnapshot(db, 'not json'),
+      /JSON/,
+    );
+    await assert.rejects(
+      () => backupService.importFullDatabaseSnapshot(db, JSON.stringify({ format: 'nope' })),
+      /WorkoutApp/,
+    );
+    assert.equal(raw.prepare('SELECT COUNT(*) AS c FROM session_logs').get().c, before);
+  });
+
+  restoreRaw.close();
 
   await check('no foreign key violations', () => {
     assert.deepEqual(raw.prepare('PRAGMA foreign_key_check').all(), []);

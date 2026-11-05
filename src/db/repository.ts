@@ -1842,3 +1842,291 @@ export async function getRunningProgressionStats(
     })
     .reverse();
 }
+
+// --- Mid-workout mutation (Phase 6) -----------------------------------------
+//
+// Gym-floor flexibility: the active session can gain or lose blocks (a machine
+// is taken, the user wants one more lift) and a block can gain or lose sets,
+// without leaving the logger. Every helper below keeps the row set internally
+// consistent (contiguous order_index / set_number), flags the parent session
+// `local_dirty`, and refuses to touch a completed session so history is never
+// rewritten by accident.
+
+const DEFAULT_BLOCK_REST_SECONDS = 90;
+const FALLBACK_BLOCK_TARGET_REPS = '8-10';
+
+/** The session a block belongs to, or null when the block does not exist. */
+async function getBlockSessionId(
+  db: SQLiteDatabase,
+  blockId: string,
+): Promise<string | null> {
+  const row = await db.getFirstAsync<{ session_id: string }>(
+    'SELECT session_id FROM session_exercise_blocks WHERE id = ? LIMIT 1;',
+    blockId,
+  );
+  return row?.session_id ?? null;
+}
+
+/** True when the session is still being logged (no `completed_at`). */
+async function sessionIsActive(db: SQLiteDatabase, sessionId: string): Promise<boolean> {
+  const row = await db.getFirstAsync<{ completed_at: string | null }>(
+    'SELECT completed_at FROM session_logs WHERE id = ? LIMIT 1;',
+    sessionId,
+  );
+  return row !== null && row.completed_at === null;
+}
+
+/**
+ * Appends a new set row to a block and returns it. The row is prefilled from the
+ * block's previous set (weight/reps/type), falling back to the last session that
+ * logged the same exercise, so the very first set of a fresh block is not empty.
+ *
+ * `set_logs` has no "planned" flag — a set row exists the moment it is appended —
+ * so the appended row carries the prefill as its values and the logger renders it
+ * as an editable row the user reviews and keeps (or clears). Refuses to grow a
+ * completed session.
+ */
+export async function appendSetToBlock(
+  db: SQLiteDatabase,
+  blockId: string,
+): Promise<SetLog> {
+  const block = await db.getFirstAsync<{
+    session_id: string;
+    exercise_id: string;
+    target_reps: string | null;
+  }>(
+    'SELECT session_id, exercise_id, target_reps FROM session_exercise_blocks WHERE id = ? LIMIT 1;',
+    blockId,
+  );
+  if (block === null) {
+    throw new Error(`Cannot append a set: block "${blockId}" does not exist.`);
+  }
+  if (!(await sessionIsActive(db, block.session_id))) {
+    throw new Error('Cannot append a set: the session is already completed.');
+  }
+
+  const rows = await db.getAllAsync<SetLogRow>(
+    `SELECT id, block_id, set_number, set_type, target_weight_kg, actual_weight_kg,
+            target_reps, actual_reps, rpe, completed_at
+     FROM set_logs WHERE block_id = ? ORDER BY set_number;`,
+    blockId,
+  );
+  const last = rows.length > 0 ? rows[rows.length - 1] : null;
+
+  let setType: SetType = last?.set_type ?? 'working';
+  let weight = last?.actual_weight_kg ?? 0;
+  let reps = last?.actual_reps ?? 0;
+
+  if (last === null) {
+    // No set in this block yet — inherit from the exercise's last session.
+    const history = await getLastPerformanceForExercises(db, [block.exercise_id], block.session_id);
+    const reference = history.get(block.exercise_id)?.topSet;
+    if (reference !== undefined) {
+      setType = 'working';
+      weight = reference.weightKg;
+      reps = reference.reps;
+    }
+  }
+
+  const setNumber = (last?.set_number ?? 0) + 1;
+  const targetReps = block.target_reps ?? FALLBACK_BLOCK_TARGET_REPS;
+  const id = createLocalId('set');
+  const completedAt = new Date().toISOString();
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      UPSERT_SET_LOG_SQL,
+      id,
+      blockId,
+      setNumber,
+      setType,
+      null,
+      weight,
+      targetReps,
+      reps,
+      null,
+      completedAt,
+    );
+    await markSessionDirty(db, block.session_id);
+  });
+
+  return {
+    id,
+    setNumber,
+    setType,
+    actualWeightKg: weight,
+    targetReps,
+    actualReps: reps,
+    completedAt,
+  };
+}
+
+/**
+ * Deletes one set row and re-indexes the block's remaining sets so `set_number`
+ * stays a contiguous 1..n run. Returns true when a row was removed. Refuses to
+ * edit a completed session.
+ */
+export async function removeSetFromBlock(
+  db: SQLiteDatabase,
+  blockId: string,
+  setNumber: number,
+): Promise<boolean> {
+  const sessionId = await getBlockSessionId(db, blockId);
+  if (sessionId === null) {
+    throw new Error(`Cannot remove a set: block "${blockId}" does not exist.`);
+  }
+  if (!(await sessionIsActive(db, sessionId))) {
+    throw new Error('Cannot remove a set: the session is already completed.');
+  }
+
+  let removed = 0;
+  await db.withTransactionAsync(async () => {
+    const result = await db.runAsync(
+      'DELETE FROM set_logs WHERE block_id = ? AND set_number = ?;',
+      blockId,
+      setNumber,
+    );
+    removed = result.changes;
+    if (removed > 0) {
+      // Collapse the gap: every set after the deleted one slides down by one.
+      await db.runAsync(
+        'UPDATE set_logs SET set_number = set_number - 1 WHERE block_id = ? AND set_number > ?;',
+        blockId,
+        setNumber,
+      );
+      await markSessionDirty(db, sessionId);
+    }
+  });
+  return removed > 0;
+}
+
+/** Next contiguous `order_index` for a session's blocks (0 when it has none). */
+async function nextSessionBlockOrderIndex(
+  db: SQLiteDatabase,
+  sessionId: string,
+): Promise<number> {
+  const row = await db.getFirstAsync<{ max_order: number | null }>(
+    'SELECT MAX(order_index) AS max_order FROM session_exercise_blocks WHERE session_id = ?;',
+    sessionId,
+  );
+  return row?.max_order === null || row?.max_order === undefined ? 0 : row.max_order + 1;
+}
+
+const INSERT_SESSION_BLOCK_SQL = `
+  INSERT INTO session_exercise_blocks
+    (id, session_id, order_index, exercise_id, substituted_from_exercise_id,
+     rest_seconds, notes, target_sets, target_reps)
+  VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, NULL);
+`;
+
+/**
+ * Appends an exercise block to the end of an active session — the mid-workout
+ * "machine is free, add another lift" flow. Validates the exercise exists in the
+ * catalog and that the session is still open. Returns the new block id.
+ */
+export async function appendExerciseBlockToSession(
+  db: SQLiteDatabase,
+  sessionId: string,
+  exerciseId: string,
+  restSeconds: number = DEFAULT_BLOCK_REST_SECONDS,
+): Promise<string> {
+  if (!(await sessionIsActive(db, sessionId))) {
+    throw new Error('Cannot add an exercise: the session is not active.');
+  }
+  const exercise = await getExerciseById(db, exerciseId);
+  if (exercise === null) {
+    throw new Error(`Cannot add an exercise: "${exerciseId}" is not in the catalog.`);
+  }
+
+  const orderIndex = await nextSessionBlockOrderIndex(db, sessionId);
+  const id = createSessionBlockId(sessionId, orderIndex);
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(INSERT_SESSION_BLOCK_SQL, id, sessionId, orderIndex, exerciseId, restSeconds);
+    await markSessionDirty(db, sessionId);
+  });
+
+  return id;
+}
+
+/** Stable block id (`<sessionId>:b<order>`) that cannot collide with the seed ids. */
+function createSessionBlockId(sessionId: string, orderIndex: number): string {
+  return `${sessionId}:b${orderIndex}`;
+}
+
+/**
+ * Removes a block (and, via cascade, its sets) from an active session, then
+ * re-indexes the remaining blocks so `order_index` stays contiguous. Returns
+ * true when a block was removed.
+ */
+export async function removeExerciseBlockFromSession(
+  db: SQLiteDatabase,
+  blockId: string,
+): Promise<boolean> {
+  const sessionId = await getBlockSessionId(db, blockId);
+  if (sessionId === null) {
+    return false;
+  }
+  if (!(await sessionIsActive(db, sessionId))) {
+    throw new Error('Cannot remove an exercise: the session is already completed.');
+  }
+
+  let removed = 0;
+  await db.withTransactionAsync(async () => {
+    const result = await db.runAsync('DELETE FROM session_exercise_blocks WHERE id = ?;', blockId);
+    removed = result.changes;
+    if (removed > 0) {
+      const remaining = await db.getAllAsync<{ id: string }>(
+        'SELECT id FROM session_exercise_blocks WHERE session_id = ? ORDER BY order_index, id;',
+        sessionId,
+      );
+      for (let index = 0; index < remaining.length; index += 1) {
+        await db.runAsync(
+          'UPDATE session_exercise_blocks SET order_index = ? WHERE id = ?;',
+          index,
+          remaining[index].id,
+        );
+      }
+      await markSessionDirty(db, sessionId);
+    }
+  });
+  return removed > 0;
+}
+
+/**
+ * Reorders a session's blocks to exactly `orderedBlockIds`. The provided ids must
+ * be a permutation of the session's current block ids (no additions, no drops),
+ * so a reorder can never silently delete a block. Refuses a completed session.
+ */
+export async function reorderSessionBlocks(
+  db: SQLiteDatabase,
+  sessionId: string,
+  orderedBlockIds: readonly string[],
+): Promise<void> {
+  if (!(await sessionIsActive(db, sessionId))) {
+    throw new Error('Cannot reorder exercises: the session is already completed.');
+  }
+  const rows = await db.getAllAsync<{ id: string }>(
+    'SELECT id FROM session_exercise_blocks WHERE session_id = ?;',
+    sessionId,
+  );
+  const current = new Set(rows.map((row) => row.id));
+  if (
+    orderedBlockIds.length !== current.size ||
+    new Set(orderedBlockIds).size !== orderedBlockIds.length ||
+    orderedBlockIds.some((id) => !current.has(id))
+  ) {
+    throw new Error('Cannot reorder exercises: the given ids do not match the session blocks.');
+  }
+
+  await db.withTransactionAsync(async () => {
+    for (let index = 0; index < orderedBlockIds.length; index += 1) {
+      await db.runAsync(
+        'UPDATE session_exercise_blocks SET order_index = ? WHERE id = ?;',
+        index,
+        orderedBlockIds[index],
+      );
+    }
+    await markSessionDirty(db, sessionId);
+  });
+}

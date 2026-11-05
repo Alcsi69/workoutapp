@@ -13,7 +13,7 @@ import type {
   TrainingGoal,
 } from '../types/workout';
 
-export const hu = {
+const hu = {
   app: {
     name: 'WorkoutApp',
   },
@@ -291,6 +291,13 @@ export const hu = {
     newPr: 'Új PR!',
     estimatedOneRepMax: 'Becsült 1RM',
     bestOneRepMax: 'Legjobb becsült 1RM',
+    addExercise: 'Gyakorlat hozzáadása',
+    removeExercise: 'Eltávolítás',
+    removeExerciseConfirm: 'Eltávolítod ezt a gyakorlatot az edzésből?',
+    moveUp: 'Feljebb',
+    moveDown: 'Lejjebb',
+    removeSet: 'Sorozat törlése',
+    plateCalculator: 'Tárcsaszámoló',
     hintReasons: {
       top_of_range_easy: 'A tartomány tetején, könnyedén — jöhet a +2,5 kg.',
       top_of_range_hard: 'A tartomány tetején, de megterhelő volt — ismételd meg.',
@@ -341,6 +348,37 @@ export const hu = {
     noEndpoint: 'Nincs backend URL beállítva.',
     close: 'Bezárás',
     empty: 'Nincs mit megjeleníteni.',
+  },
+
+  plate: {
+    title: 'Tárcsaszámoló',
+    targetWeight: 'Célsúly',
+    barWeight: 'Rúd súlya',
+    perSide: 'Oldalanként',
+    platesEachSide: 'Tárcsák oldalanként',
+    achievable: 'Elérhető súly',
+    exact: 'Pontos rakás.',
+    shortfall: 'A legközelebbi elérhető súly',
+    noPlates: 'Csak a rúd — nincs tárcsa.',
+    totalPlates: 'tárcsa összesen',
+    close: 'Bezárás',
+  },
+
+  backup: {
+    title: 'Biztonsági mentés',
+    caption:
+      'Mentsd ki a teljes helyi adatbázist JSON-ként, majd töltsd vissza egy másik telepítésen — így az Expo Go-ban naplózott edzések átvihetők egy önálló buildbe.',
+    copy: 'JSON másolása',
+    copied: 'A biztonsági mentés a vágólapon van.',
+    copyError: 'Nem sikerült a vágólapra másolni.',
+    loadTitle: 'Visszatöltés',
+    loadHint: 'Illeszd be a korábban kimásolt JSON-t:',
+    loadPlaceholder: '{ "format": "workoutapp.backup", ... }',
+    load: 'Betöltés',
+    loadConfirm: 'A visszatöltés felülírja a jelenlegi adatokat. Folytatod?',
+    imported: 'Visszatöltve',
+    importError: 'A visszaállítás sikertelen',
+    schemaMismatch: 'Nem támogatott mentés-verzió.',
   },
 
   picker: {

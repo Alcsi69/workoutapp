@@ -1,6 +1,14 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { Pill } from '../../components/Badge';
@@ -8,9 +16,13 @@ import { Screen } from '../../components/Screen';
 import { SyncCard } from '../../components/SyncCard';
 import { getDatabase } from '../../db/client';
 import { getExerciseCatalog, getUserProfile } from '../../db/repository';
+import {
+  exportFullDatabaseSnapshot,
+  importFullDatabaseSnapshot,
+} from '../../services/backupService';
 import { formatDateHu } from '../../services/format';
 import hu from '../../i18n/hu';
-import { colors, spacing, typography } from '../../theme/tokens';
+import { colors, radius, spacing, typography } from '../../theme/tokens';
 import type { JointConstraintSeverity, UserProfile } from '../../types/workout';
 
 interface ProfileData {
@@ -38,40 +50,121 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * Biztonsági mentés card: copies the whole local database to the clipboard as
+ * JSON and restores one pasted back, so workouts logged in Expo Go can be moved
+ * to a standalone build. Self-contained — it talks to the database directly and
+ * asks the parent to reload the profile after a restore.
+ */
+function BackupSection({ onRestored }: { onRestored: () => void }) {
+  const [importText, setImportText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const copyBackup = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const db = await getDatabase();
+      const json = await exportFullDatabaseSnapshot(db);
+      await Clipboard.setStringAsync(json);
+      Alert.alert(hu.backup.title, hu.backup.copied);
+    } catch (cause: unknown) {
+      Alert.alert(hu.backup.title, cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restoreBackup = (): void => {
+    if (importText.trim().length === 0) {
+      return;
+    }
+    Alert.alert(hu.backup.loadTitle, hu.backup.loadConfirm, [
+      { text: hu.common.cancel, style: 'cancel' },
+      {
+        text: hu.backup.load,
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setBusy(true);
+            try {
+              const db = await getDatabase();
+              const summary = await importFullDatabaseSnapshot(db, importText);
+              setImportText('');
+              onRestored();
+              Alert.alert(
+                hu.backup.imported,
+                `${summary.sessionLogs} ${hu.screens.history.exercisesLabel}, ` +
+                  `${summary.customExercises} ${hu.picker.customBadge}`,
+              );
+            } catch (cause: unknown) {
+              Alert.alert(
+                hu.backup.importError,
+                cause instanceof Error ? cause.message : String(cause),
+              );
+            } finally {
+              setBusy(false);
+            }
+          })();
+        },
+      },
+    ]);
+  };
+
+  return (
+    <Card title={hu.backup.title}>
+      <Text style={styles.backupCaption}>{hu.backup.caption}</Text>
+      <Button
+        label={hu.backup.copy}
+        onPress={() => {
+          void copyBackup();
+        }}
+        loading={busy}
+      />
+      <Text style={styles.backupHint}>{hu.backup.loadHint}</Text>
+      <TextInput
+        value={importText}
+        onChangeText={setImportText}
+        placeholder={hu.backup.loadPlaceholder}
+        placeholderTextColor={colors.textMuted}
+        selectionColor={colors.accent}
+        multiline
+        autoCorrect={false}
+        autoCapitalize="none"
+        style={styles.backupInput}
+      />
+      <Button
+        label={hu.backup.load}
+        variant="secondary"
+        onPress={restoreBackup}
+        disabled={importText.trim().length === 0}
+      />
+    </Card>
+  );
+}
+
 export default function ProfileScreen() {
   const [data, setData] = useState<ProfileData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const db = await getDatabase();
+      const [profile, catalog] = await Promise.all([getUserProfile(db), getExerciseCatalog(db)]);
+      const exerciseNames: Record<string, string> = {};
+      for (const item of catalog) {
+        exerciseNames[item.id] = item.nameHu;
+      }
+      setData({ profile, exerciseNames });
+      setError(null);
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      getDatabase()
-        .then(async (db): Promise<ProfileData> => {
-          const [profile, catalog] = await Promise.all([
-            getUserProfile(db),
-            getExerciseCatalog(db),
-          ]);
-          const exerciseNames: Record<string, string> = {};
-          for (const item of catalog) {
-            exerciseNames[item.id] = item.nameHu;
-          }
-          return { profile, exerciseNames };
-        })
-        .then((next) => {
-          if (!cancelled) {
-            setData(next);
-            setError(null);
-          }
-        })
-        .catch((cause: unknown) => {
-          if (!cancelled) {
-            setError(cause instanceof Error ? cause.message : String(cause));
-          }
-        });
-      return () => {
-        cancelled = true;
-      };
-    }, []),
+      void load();
+    }, [load]),
   );
 
   if (data === null) {
@@ -97,6 +190,11 @@ export default function ProfileScreen() {
             onPress={() => router.replace('/onboarding')}
           />
         </Card>
+        <BackupSection
+          onRestored={() => {
+            void load();
+          }}
+        />
       </Screen>
     );
   }
@@ -187,6 +285,12 @@ export default function ProfileScreen() {
 
       <SyncCard />
 
+      <BackupSection
+        onRestored={() => {
+          void load();
+        }}
+      />
+
       <Text style={styles.updated}>
         {hu.screens.profile.updatedAt}: {formatDateHu(profile.updatedAt)}
       </Text>
@@ -263,6 +367,30 @@ const styles = StyleSheet.create({
   substitution: {
     color: colors.textPrimary,
     fontSize: typography.sizes.sm,
+  },
+  backupCaption: {
+    color: colors.textMuted,
+    fontSize: typography.sizes.xs,
+    lineHeight: typography.sizes.xs * typography.lineHeights.relaxed,
+  },
+  backupHint: {
+    color: colors.textSecondary,
+    fontSize: typography.sizes.xs,
+    fontWeight: typography.weights.medium,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  backupInput: {
+    minHeight: 96,
+    color: colors.textPrimary,
+    fontSize: typography.sizes.sm,
+    backgroundColor: colors.surfaceInput,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    textAlignVertical: 'top',
   },
   updated: {
     color: colors.textMuted,

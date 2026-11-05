@@ -1,23 +1,30 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { Button } from '../../components/Button';
 import { Screen } from '../../components/Screen';
+import { ExercisePickerModal } from '../../components/ExercisePickerModal';
 import { RestTimerBar } from '../../components/logger/RestTimerBar';
 import { ExerciseBlockCard } from '../../components/logger/ExerciseBlockCard';
 import type { SetDraft } from '../../components/logger/ExerciseBlockCard';
+import { PlateCalculatorModal } from '../../components/logger/PlateCalculatorModal';
 import { RunningLoggerCard } from '../../components/logger/RunningLoggerCard';
 import { SubstitutionModal } from '../../components/logger/SubstitutionModal';
 import { getDatabase } from '../../db/client';
 import {
+  appendExerciseBlockToSession,
   completeSession,
   deleteSetLog,
   discardSession,
+  getExerciseCatalog,
   getLastPerformanceForExercises,
   getSessionDetail,
   getSubstitutionCandidates,
   getUserProfile,
+  removeExerciseBlockFromSession,
+  removeSetFromBlock,
+  reorderSessionBlocks,
   substituteExerciseInBlock,
   upsertRunningMetrics,
   upsertSetLog,
@@ -29,7 +36,7 @@ import {
   useActiveWorkoutStore,
 } from '../../store/useActiveWorkoutStore';
 import hu from '../../i18n/hu';
-import { colors, spacing, typography } from '../../theme/tokens';
+import { colors, radius, spacing, typography } from '../../theme/tokens';
 import type {
   ExerciseCatalogItem,
   LastPerformance,
@@ -124,6 +131,13 @@ export default function WorkoutLoggerScreen() {
   const [error, setError] = useState<string | null>(null);
   const [substitution, setSubstitution] = useState<SubstitutionState | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [addExerciseVisible, setAddExerciseVisible] = useState(false);
+  const [catalog, setCatalog] = useState<ExerciseCatalogItem[]>([]);
+  const [plate, setPlate] = useState<{
+    visible: boolean;
+    weight: number | null;
+    name?: string;
+  }>({ visible: false, weight: null });
 
   const restEndTimeMs = useActiveWorkoutStore((state) => state.restEndTimeMs);
   const startRest = useActiveWorkoutStore((state) => state.startRest);
@@ -199,6 +213,86 @@ export default function WorkoutLoggerScreen() {
     const db = await getDatabase();
     await deleteSetLog(db, draft.setLogId);
   }, []);
+
+  /** Removes a persisted set row (the block's remaining sets re-index behind it). */
+  const handleRemoveSet = useCallback(
+    async (block: SessionExerciseBlock, setNumber: number): Promise<void> => {
+      const db = await getDatabase();
+      await removeSetFromBlock(db, block.id, setNumber);
+    },
+    [],
+  );
+
+  /** Opens the plate-loader sheet for a barbell-family block. */
+  const handleOpenPlates = useCallback(
+    (block: SessionExerciseBlock, initialWeightKg: number | null): void => {
+      setPlate({ visible: true, weight: initialWeightKg, name: block.exercise.nameHu });
+    },
+    [],
+  );
+
+  /** Swaps a block with its neighbour in the logger order (gym-floor reshuffle). */
+  const handleMoveBlock = useCallback(
+    async (block: SessionExerciseBlock, direction: -1 | 1): Promise<void> => {
+      if (detail === null) {
+        return;
+      }
+      const ids = detail.exerciseBlocks.map((entry) => entry.id);
+      const index = ids.indexOf(block.id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= ids.length) {
+        return;
+      }
+      const next = [...ids];
+      next[index] = ids[target];
+      next[target] = ids[index];
+      const db = await getDatabase();
+      await reorderSessionBlocks(db, detail.id, next);
+      await reload();
+    },
+    [detail, reload],
+  );
+
+  /** Removes an exercise block from the session after confirmation. */
+  const handleRemoveBlock = useCallback(
+    (block: SessionExerciseBlock): void => {
+      Alert.alert(hu.logger.removeExercise, hu.logger.removeExerciseConfirm, [
+        { text: hu.common.cancel, style: 'cancel' },
+        {
+          text: hu.logger.removeExercise,
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const db = await getDatabase();
+              await removeExerciseBlockFromSession(db, block.id);
+              await reload();
+            })();
+          },
+        },
+      ]);
+    },
+    [reload],
+  );
+
+  /** Opens the exercise picker to append a block mid-workout. */
+  const handleOpenAddExercise = useCallback(async (): Promise<void> => {
+    const db = await getDatabase();
+    setCatalog(await getExerciseCatalog(db));
+    setAddExerciseVisible(true);
+  }, []);
+
+  const handlePickExercise = useCallback(
+    async (exerciseId: string): Promise<void> => {
+      setAddExerciseVisible(false);
+      if (detail === null) {
+        return;
+      }
+      const db = await getDatabase();
+      await appendExerciseBlockToSession(db, detail.id, exerciseId);
+      await reload();
+    },
+    [detail, reload],
+  );
 
   const handleSubstitute = useCallback(async (block: SessionExerciseBlock): Promise<void> => {
     const db = await getDatabase();
@@ -315,7 +409,7 @@ export default function WorkoutLoggerScreen() {
       ) : null}
 
       {isStrength
-        ? detail.exerciseBlocks.map((block) => (
+        ? detail.exerciseBlocks.map((block, index) => (
             <ExerciseBlockCard
               key={block.id}
               block={block}
@@ -324,9 +418,32 @@ export default function WorkoutLoggerScreen() {
               onPersistSet={handlePersistSet}
               onDeleteSet={handleDeleteSet}
               onSubstitute={handleSubstitute}
+              onRemoveSet={handleRemoveSet}
+              onOpenPlates={handleOpenPlates}
+              onMoveUp={(target) => {
+                void handleMoveBlock(target, -1);
+              }}
+              onMoveDown={(target) => {
+                void handleMoveBlock(target, 1);
+              }}
+              onRemoveBlock={handleRemoveBlock}
+              canMoveUp={index > 0}
+              canMoveDown={index < detail.exerciseBlocks.length - 1}
             />
           ))
         : null}
+
+      {isStrength ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            void handleOpenAddExercise();
+          }}
+          style={({ pressed }) => [styles.addExercise, pressed ? styles.pressed : null]}
+        >
+          <Text style={styles.addExerciseLabel}>+ {hu.logger.addExercise}</Text>
+        </Pressable>
+      ) : null}
 
       <SubstitutionModal
         visible={substitution !== null}
@@ -338,6 +455,24 @@ export default function WorkoutLoggerScreen() {
         }}
         onClose={() => setSubstitution(null)}
       />
+
+      <ExercisePickerModal
+        visible={addExerciseVisible}
+        catalog={catalog}
+        title={hu.logger.addExercise}
+        onPick={(exerciseId) => {
+          void handlePickExercise(exerciseId);
+        }}
+        onClose={() => setAddExerciseVisible(false)}
+      />
+
+      {plate.visible ? (
+        <PlateCalculatorModal
+          initialWeightKg={plate.weight}
+          exerciseName={plate.name}
+          onClose={() => setPlate((current) => ({ ...current, visible: false }))}
+        />
+      ) : null}
     </Screen>
   );
 }
@@ -352,5 +487,22 @@ const styles = StyleSheet.create({
   },
   footer: {
     gap: spacing.sm,
+  },
+  addExercise: {
+    alignSelf: 'flex-start',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    borderStyle: 'dashed',
+  },
+  addExerciseLabel: {
+    color: colors.accent,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.medium,
+  },
+  pressed: {
+    opacity: 0.8,
   },
 });

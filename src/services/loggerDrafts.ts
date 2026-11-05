@@ -105,6 +105,19 @@ export function buildInitialDrafts(
 }
 
 /**
+ * Rebuilds a block's draft list so `set_number` runs contiguously from 1 after a
+ * row was removed. React keys are rebuilt from the block id so each row keeps a
+ * stable identity across the renumber.
+ */
+export function renumberDrafts(blockId: string, drafts: readonly SetDraft[]): SetDraft[] {
+  return drafts.map((draft, index) => ({
+    ...draft,
+    setNumber: index + 1,
+    key: `${blockId}:${index + 1}`,
+  }));
+}
+
+/**
  * Keys of the completed rows that beat the best estimated 1RM known *before*
  * them — the all-time best from earlier sessions, or a set already logged earlier
  * in this block (rows are evaluated in set order). Derived from the drafts on
