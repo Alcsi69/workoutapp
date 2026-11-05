@@ -12,7 +12,9 @@ import {
   createCoachingBooking,
   getCoachingBookings,
   getOpenCoachingSlots,
+  getSyncServerUrl,
 } from '../../db/repository';
+import { syncPendingWorkouts } from '../../services/syncService';
 import { formatDateTimeHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
@@ -126,6 +128,8 @@ export default function BookingScreen() {
   const [selectedSlot, setSelectedSlot] = useState<CoachingSlot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     const db = await getDatabase();
@@ -207,6 +211,28 @@ export default function BookingScreen() {
     ]);
   };
 
+  const runSync = async (): Promise<void> => {
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      const db = await getDatabase();
+      const url = await getSyncServerUrl(db);
+      const result = await syncPendingWorkouts(db, url);
+      if (result.mode === 'noop') {
+        setSyncMessage(hu.sync.noop);
+      } else if (result.mode === 'remote') {
+        setSyncMessage(hu.sync.remoteFull);
+      } else {
+        setSyncMessage(`${hu.sync.dryRun}${result.error !== undefined ? ` ${result.error}` : ''}`);
+      }
+      await load();
+    } catch (cause: unknown) {
+      setSyncMessage(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   if (slots === null) {
     return (
       <Screen title={hu.tabs.booking} subtitle={hu.screens.booking.subtitle}>
@@ -236,6 +262,16 @@ export default function BookingScreen() {
           />
         ))}
       </View>
+
+      <Button
+        label={syncing ? hu.sync.syncing : hu.sync.syncNow}
+        variant="secondary"
+        loading={syncing}
+        onPress={() => {
+          void runSync();
+        }}
+      />
+      {syncMessage !== null ? <Text style={styles.syncMessage}>{syncMessage}</Text> : null}
 
       {error !== null ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -301,6 +337,10 @@ const styles = StyleSheet.create({
   },
   error: {
     color: colors.danger,
+    fontSize: typography.sizes.sm,
+  },
+  syncMessage: {
+    color: colors.textSecondary,
     fontSize: typography.sizes.sm,
   },
   filterRow: {

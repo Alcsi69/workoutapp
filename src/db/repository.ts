@@ -20,6 +20,7 @@ import type {
   CoachingBooking,
   CoachingBookingStatus,
   CoachingSlot,
+  CoachSyncPullResponse,
   CustomExerciseInput,
   CustomTemplateInput,
   ExerciseCatalogItem,
@@ -2066,6 +2067,197 @@ export async function markSessionsSynced(
     changes = result.changes;
   });
   return changes;
+}
+
+// --- Local app settings (Phase 7B) ------------------------------------------
+//
+// Device-local configuration that is not part of the domain model. Currently the
+// coach backend base URL the sync service talks to; the Profil sync card edits it.
+
+/** Default backend base URL: the Android emulator's host loopback. */
+export const DEFAULT_SYNC_SERVER_URL = 'http://10.0.2.2:4000';
+
+const SYNC_SERVER_URL_KEY = 'sync.serverUrl';
+
+/** INSERT-or-replace a settings row. */
+const UPSERT_SETTING_SQL = `
+  INSERT INTO app_settings (key, value)
+  VALUES (?, ?)
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+`;
+
+/** The configured coach backend base URL, or the emulator default when unset. */
+export async function getSyncServerUrl(db: SQLiteDatabase): Promise<string> {
+  const row = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_settings WHERE key = ? LIMIT 1;',
+    SYNC_SERVER_URL_KEY,
+  );
+  const value = row?.value?.trim();
+  return value !== undefined && value.length > 0 ? value : DEFAULT_SYNC_SERVER_URL;
+}
+
+/** Persists the coach backend base URL (trimmed). An empty value clears it. */
+export async function setSyncServerUrl(db: SQLiteDatabase, url: string): Promise<void> {
+  await db.runAsync(UPSERT_SETTING_SQL, SYNC_SERVER_URL_KEY, url.trim());
+}
+
+// --- Coach pull reconciliation (Phase 7B) ------------------------------------
+//
+// The client's sync is Push-then-Pull. This is the Pull half: it takes the coach
+// backend's `CoachSyncPullResponse` and reconciles the local SQLite graph so the
+// on-device UI reflects the coach's latest assignments, booking decisions and
+// availability. Everything runs in one transaction, so a failed apply never
+// leaves the client half-synced.
+
+const SELECT_COACH_TEMPLATE_IDS_SQL = `SELECT id FROM workout_templates WHERE source = 'coach';`;
+
+const SELECT_SLOT_BOOK_STATE_SQL = `SELECT id, is_booked FROM coaching_slots;`;
+
+/** Upserts a slot as open. Never flips a slot the client already booked back to open. */
+const UPSERT_PULLED_SLOT_SQL = `
+  INSERT INTO coaching_slots (id, starts_at, ends_at, modality, location_or_link, is_booked)
+  VALUES (?, ?, ?, ?, ?, 0)
+  ON CONFLICT(id) DO UPDATE SET
+    starts_at = excluded.starts_at,
+    ends_at = excluded.ends_at,
+    modality = excluded.modality,
+    location_or_link = excluded.location_or_link;
+`;
+
+/** Ensures a slot row exists for a server booking whose slot was not in the open set. */
+const ENSURE_BOOKED_SLOT_SQL = `
+  INSERT OR IGNORE INTO coaching_slots
+    (id, starts_at, ends_at, modality, location_or_link, is_booked)
+  VALUES (?, ?, ?, ?, ?, 1);
+`;
+
+/** Server-authored booking state: status/notes/link are overwritten, client notes preserved. */
+const UPSERT_PULLED_BOOKING_SQL = `
+  INSERT INTO coaching_bookings
+    (id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
+     client_notes, coach_notes, status, sync_status, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?)
+  ON CONFLICT(id) DO UPDATE SET
+    slot_id = excluded.slot_id,
+    modality = excluded.modality,
+    starts_at = excluded.starts_at,
+    ends_at = excluded.ends_at,
+    location_or_link = excluded.location_or_link,
+    coach_notes = excluded.coach_notes,
+    status = excluded.status,
+    sync_status = 'synced';
+`;
+
+/**
+ * Applies a coach pull response to the local database, atomically:
+ *
+ * 1. The user's `source = 'coach'` templates are replaced wholesale — templates
+ *    the coach withdrew are deleted, incoming ones upserted with their blocks.
+ * 2. Open `coaching_slots` are refreshed: server slots are upserted and any
+ *    locally-cached *unbooked* slot the coach no longer offers is dropped. Slots
+ *    the client has booked locally are never deleted (their bookings depend on
+ *    them via FK).
+ * 3. `coaching_bookings` are reconciled: status, coach notes and the meeting
+ *    link come from the server and are marked `synced`, so a confirmed/completed
+ *    booking stops showing as pending.
+ *
+ * @param payload the parsed `GET /api/sync/pull` response body.
+ */
+export async function applyClientSyncPullPayload(
+  db: SQLiteDatabase,
+  payload: CoachSyncPullResponse,
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  await db.withTransactionAsync(async () => {
+    // --- 1. Coach templates -------------------------------------------------
+    const incomingIds = new Set(payload.templates.map((template) => template.id));
+    const existing = await db.getAllAsync<{ id: string }>(SELECT_COACH_TEMPLATE_IDS_SQL);
+    for (const row of existing) {
+      if (!incomingIds.has(row.id)) {
+        await db.runAsync('DELETE FROM workout_templates WHERE id = ?;', row.id);
+      }
+    }
+
+    for (const template of payload.templates) {
+      await db.runAsync(
+        UPSERT_TEMPLATE_META_SQL,
+        template.id,
+        template.title,
+        template.sessionType,
+        template.goal ?? null,
+        'coach',
+        template.coachNote ?? null,
+        template.assignedAt ?? now,
+        template.createdAt ?? now,
+      );
+      await db.runAsync(DELETE_TEMPLATE_BLOCK_SQL, template.id);
+      for (let index = 0; index < template.exercises.length; index += 1) {
+        const block = template.exercises[index];
+        await db.runAsync(
+          INSERT_TEMPLATE_BLOCK_SQL,
+          `${template.id}:${index}`,
+          template.id,
+          index,
+          block.exerciseId,
+          block.substitutedFromExerciseId ?? null,
+          block.restSeconds,
+          block.notes ?? null,
+          block.targetSets ?? null,
+          block.targetReps ?? null,
+        );
+      }
+    }
+
+    // --- 2. Open coaching slots --------------------------------------------
+    const incomingSlotIds = new Set(payload.slots.map((slot) => slot.id));
+    const localSlots = await db.getAllAsync<{ id: string; is_booked: number }>(
+      SELECT_SLOT_BOOK_STATE_SQL,
+    );
+    for (const slot of localSlots) {
+      if (slot.is_booked === 0 && !incomingSlotIds.has(slot.id)) {
+        await db.runAsync('DELETE FROM coaching_slots WHERE id = ?;', slot.id);
+      }
+    }
+    for (const slot of payload.slots) {
+      await db.runAsync(
+        UPSERT_PULLED_SLOT_SQL,
+        slot.id,
+        slot.startsAt,
+        slot.endsAt,
+        slot.modality,
+        slot.locationOrLink,
+      );
+    }
+
+    // --- 3. Bookings --------------------------------------------------------
+    for (const booking of payload.bookings) {
+      // The booking's slot may be booked (hence absent from `slots`); make sure a
+      // row exists so the FK on coaching_bookings.slot_id stays satisfied.
+      await db.runAsync(
+        ENSURE_BOOKED_SLOT_SQL,
+        booking.slotId,
+        booking.startsAt,
+        booking.endsAt,
+        booking.modality,
+        booking.locationOrLink,
+      );
+      await db.runAsync(
+        UPSERT_PULLED_BOOKING_SQL,
+        booking.id,
+        booking.slotId,
+        booking.userId,
+        booking.modality,
+        booking.startsAt,
+        booking.endsAt,
+        booking.locationOrLink,
+        booking.clientNotes ?? null,
+        booking.coachNotes ?? null,
+        booking.status,
+        booking.createdAt,
+      );
+    }
+  });
 }
 
 // --- Progressive overload memory (Phase 5) ----------------------------------

@@ -1,6 +1,6 @@
 # Core TypeScript Interfaces (`src/types/workout.ts`)
 
-Schema v5. All unions and literal types below are mirrored 1:1 by `src/types/workout.ts`;
+Schema v6. All unions and literal types below are mirrored 1:1 by `src/types/workout.ts`;
 the SQLite row shapes (snake_case) live in `src/db/schema.ts`.
 
 ## Enums & unions
@@ -338,17 +338,35 @@ export interface ClientSyncPullPayload {
   catalog: ExerciseCatalogItem[];
 }
 
-/** Coach backend -> client ("here is my locally-changed state"). */
+/** Client -> coach backend ("here is my locally-changed state"). Phase 7B. */
 export interface ClientSyncPushPayload {
   batchId: string;
   generatedAt: string;
   deviceId: string;
+  profile: OnboardingPayload;             // added in Phase 7B
+  billingProfile: ClientBillingProfile | null;  // added in Phase 7B
   sessions: WorkoutSessionLog[];
   bookings: CoachingBooking[];
+}
+
+/**
+ * Coach backend -> client pull response (Phase 7B). Applied on device by
+ * `applyClientSyncPullPayload`. Replaces the client's `source = 'coach'`
+ * templates, refreshes open slots and reconciles booking statuses.
+ */
+export interface CoachSyncPullResponse {
+  syncId: string;
+  generatedAt: string;
+  userId: string;
+  templates: WorkoutTemplate[];
+  bookings: CoachingBooking[];
+  slots: CoachingSlot[];
 }
 ```
 
 Repository helpers (`src/db/repository.ts`): `getClientBillingProfile` / `saveClientBillingProfile`,
 `assignCoachTemplate` / `getCoachAssignedTemplates`, `seedCoachingSlots` / `getOpenCoachingSlots`,
-`createCoachingBooking` / `getCoachingBookings` / `cancelCoachingBooking`, and
-`getDirtyCoachingBookings` / `markCoachingBookingsSynced` for the offline queue.
+`createCoachingBooking` / `getCoachingBookings` / `cancelCoachingBooking`,
+`getDirtyCoachingBookings` / `markCoachingBookingsSynced` for the offline queue, and — added in
+Phase 7B — `applyClientSyncPullPayload`, plus device-local settings `getSyncServerUrl` /
+`setSyncServerUrl` (schema v6 `app_settings` table).

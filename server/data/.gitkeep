@@ -1,0 +1,2 @@
+# The coach server writes its SQLite database here (coach-platform.db).
+# The directory is tracked so the server has a home; the database files are ignored.

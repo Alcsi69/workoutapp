@@ -27,6 +27,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "verify:db": "rm -rf .verify-build && tsc -p scripts/tsconfig.verify.json && node scripts/verify-db.cjs",
+    "verify:server": "rm -rf .verify-build server/dist && tsc -p scripts/tsconfig.verify.json && tsc -p server/tsconfig.json && node scripts/verify-server.cjs",
+    "server:build": "tsc -p server/tsconfig.json",
+    "server:start": "node server/dist/server/src/index.js",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",

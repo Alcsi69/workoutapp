@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="hu">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WorkoutApp · Edzői Admin</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">WA</span>
+        <div>
+          <h1>Edzői Admin</h1>
+          <p>WorkoutApp coach platform</p>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <button class="nav-btn is-active" data-view="overview">Áttekintés</button>
+        <button class="nav-btn" data-view="clients">Ügyfelek &amp; Számlázás</button>
+        <button class="nav-btn" data-view="builder">Edzésterv készítő</button>
+        <button class="nav-btn" data-view="slots">Időpontok &amp; Foglalások</button>
+        <button class="nav-btn" data-view="exercises">Gyakorlatok</button>
+      </nav>
+      <div class="conn" id="conn">
+        <span class="dot" id="connDot"></span>
+        <span id="connText">Kapcsolódás…</span>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="view is-active" data-view="overview">
+        <div class="stat-grid" id="overviewStats"></div>
+        <div class="card">
+          <h2>Legutóbb szinkronizált ügyfelek</h2>
+          <div id="overviewClients" class="list"></div>
+        </div>
+      </section>
+
+      <section class="view" data-view="clients">
+        <div class="card">
+          <h2>Ügyfelek</h2>
+          <div id="clientsTable" class="table-host"></div>
+        </div>
+        <div id="clientDetail" class="detail-host"></div>
+      </section>
+
+      <section class="view" data-view="builder">
+        <div class="split">
+          <div class="card col-form">
+            <h2>Edzésterv összeállítása</h2>
+            <label class="field">
+              <span>Ügyfél</span>
+              <select id="builderClient"></select>
+            </label>
+            <label class="field">
+              <span>Terv neve</span>
+              <input id="builderTitle" type="text" placeholder="pl. Felsőtest B – pHack" />
+            </label>
+            <label class="field">
+              <span>Típus</span>
+              <select id="builderType">
+                <option value="strength">Erő</option>
+                <option value="running">Futás</option>
+                <option value="hybrid">Hibrid</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Edzői megjegyzés</span>
+              <textarea id="builderNote" rows="2" placeholder="pl. Térdkímélő: alacsony tengelyterhelés."></textarea>
+            </label>
+            <div class="block-list" id="builderBlocks"></div>
+            <button class="btn primary" id="builderSave">Terv kiosztása</button>
+            <div id="builderExisting" class="list"></div>
+          </div>
+          <div class="card col-picker">
+            <h2>Gyakorlat hozzáadása</h2>
+            <input id="exerciseSearch" class="search" type="search" placeholder="Keresés (magyar / angol)…" />
+            <div class="chips" id="exerciseFilters"></div>
+            <div class="exercise-list" id="exerciseList"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view="slots">
+        <div class="split">
+          <div class="card col-form">
+            <h2>Új időpont</h2>
+            <label class="field"><span>Kezdés</span><input id="slotStart" type="datetime-local" /></label>
+            <label class="field"><span>Hossz (perc)</span><input id="slotDuration" type="number" value="45" min="15" step="15" /></label>
+            <label class="field">
+              <span>Modalitás</span>
+              <select id="slotModality">
+                <option value="online_call">Online konzultáció</option>
+                <option value="irl_gym">Személyi edzés (IRL)</option>
+              </select>
+            </label>
+            <label class="field"><span>Link / helyszín</span><input id="slotLocation" type="text" placeholder="https://meet… vagy edzőterem címe" /></label>
+            <button class="btn primary" id="slotCreate">Időpont létrehozása</button>
+            <div id="slotsList" class="list"></div>
+          </div>
+          <div class="card col-picker">
+            <h2>Foglalások</h2>
+            <div id="bookingsList" class="list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view="exercises">
+        <div class="card">
+          <h2>Gyakorlat katalógus <span class="muted" id="catalogCount"></span></h2>
+          <input id="catalogSearch" class="search" type="search" placeholder="Keresés…" />
+          <div class="chips" id="catalogFilters"></div>
+          <div class="exercise-list wide" id="catalogList"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -291,13 +291,44 @@ export interface ClientSyncPullPayload {
   catalog: ExerciseCatalogItem[];
 }
 
-/** Coach backend -> client request body ("here is my local state"). */
+/**
+ * Client -> coach backend request body ("here is my local state").
+ *
+ * `POST /api/sync/push` (Phase 7B). Carries the client's whole changed state in
+ * one request: the onboarding profile and billing record (so the coach dashboard
+ * mirrors the client and can invoice them), plus every locally dirty workout
+ * session and coaching booking.
+ */
 export interface ClientSyncPushPayload {
   batchId: string;
   generatedAt: string; // ISO-8601
   deviceId: string;
+  /** The client's onboarding profile (drives the admin dashboard's client mirror). */
+  profile: OnboardingPayload;
+  /** Contact & billing details the coach needs to issue invoices (null until saved). */
+  billingProfile: ClientBillingProfile | null;
   sessions: WorkoutSessionLog[];
   bookings: CoachingBooking[];
+}
+
+/**
+ * Coach backend -> client pull response (Phase 7B). The answer to
+ * `GET /api/sync/pull?userId=...`: everything the coach has assigned to — or
+ * changed for — this client since the last sync.
+ *
+ * Applied on device by `applyClientSyncPullPayload` (src/db/repository.ts),
+ * which atomically reconciles the local SQLite graph with this response.
+ */
+export interface CoachSyncPullResponse {
+  syncId: string;
+  generatedAt: string; // ISO-8601
+  userId: string;
+  /** The client's coach-assigned plans (source === 'coach'), hydrated with catalog entries. */
+  templates: WorkoutTemplate[];
+  /** The client's bookings carrying the coach's latest status, notes and meeting link. */
+  bookings: CoachingBooking[];
+  /** Currently open (unbooked, upcoming) 1-on-1 coaching slots. */
+  slots: CoachingSlot[];
 }
 
 // --- Phase 5: progressive overload memory, 1RM analytics, PR detection ------

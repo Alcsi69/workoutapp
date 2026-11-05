@@ -23,7 +23,7 @@ import type {
   TrainingGoal,
 } from '../types/workout';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export interface Migration {
   version: number;
@@ -246,6 +246,19 @@ export const migrations: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_coaching_slots_starts ON coaching_slots(starts_at);`,
       `CREATE INDEX IF NOT EXISTS idx_coaching_bookings_slot ON coaching_bookings(slot_id);`,
       `CREATE INDEX IF NOT EXISTS idx_coaching_bookings_sync ON coaching_bookings(sync_status);`,
+    ],
+  },
+  {
+    version: 6,
+    statements: [
+      // --- Local app settings -------------------------------------------------
+      // Small key/value store for client-side preferences that are not part of
+      // the domain (e.g. the coach backend base URL the sync service talks to).
+      // Kept out of the sync contracts on purpose: it is device-local config.
+      `CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+      );`,
     ],
   },
 ];

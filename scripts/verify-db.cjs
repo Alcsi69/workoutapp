@@ -1129,26 +1129,147 @@ async function main() {
     assert.equal(await repository.countDirtySessions(db), dirtyPayload.length);
   });
 
-  await check('syncPendingWorkouts uploads and marks synced on a 2xx response', async () => {
+  await check('syncPendingWorkouts pushes then pulls on a 2xx response', async () => {
     const calls = [];
     const previousFetch = globalThis.fetch;
+    const pullBody = {
+      syncId: 'sync_pull_test',
+      generatedAt: new Date().toISOString(),
+      userId: repository.USER_PROFILE_ID,
+      templates: [],
+      bookings: [],
+      slots: [],
+    };
     globalThis.fetch = async (url, init) => {
       calls.push({ url, init });
-      return { ok: true, status: 200 };
+      if (url.includes('/api/sync/pull')) {
+        return { ok: true, status: 200, json: async () => pullBody };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
     };
     try {
-      const result = await syncPendingWorkouts(db, 'https://example.test/workouts');
+      const result = await syncPendingWorkouts(db, 'https://example.test');
       assert.equal(result.mode, 'remote');
       assert.equal(result.sessionCount, dirtyPayload.length);
       assert.equal(result.syncedSessionIds.length, dirtyPayload.length);
-      assert.equal(calls.length, 1);
-      assert.equal(calls[0].url, 'https://example.test/workouts');
+      assert.equal(calls.length, 2);
+      assert.ok(calls[0].url.endsWith('/api/sync/push'), 'first leg is the push');
+      assert.ok(
+        calls[1].url.includes('/api/sync/pull?userId=usr_local'),
+        'second leg is the pull',
+      );
       const sent = JSON.parse(calls[0].init.body);
       assert.equal(sent.sessions.length, dirtyPayload.length);
+      assert.equal(sent.profile.userId, repository.USER_PROFILE_ID);
       assert.equal(await repository.countDirtySessions(db), 0);
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  await check('applyClientSyncPullPayload reconciles coach templates, slots and bookings', async () => {
+    // A stale coach template + a stale open slot that the pull must withdraw.
+    await repository.assignCoachTemplate(db, {
+      id: 'tpl_coach_stale',
+      title: 'Stale plan',
+      sessionType: 'strength',
+      blocks: [{ exerciseId: 'bench_press', targetSets: 3, targetReps: '5', restSeconds: 120 }],
+    });
+    raw
+      .prepare(
+        "INSERT INTO coaching_slots (id, starts_at, ends_at, modality, location_or_link, is_booked) VALUES ('slot_stale','2031-01-01T09:00:00.000Z','2031-01-01T10:00:00.000Z','online_call','x',0)",
+      )
+      .run();
+
+    const pull = {
+      syncId: 'sync_pull_apply',
+      generatedAt: new Date().toISOString(),
+      userId: repository.USER_PROFILE_ID,
+      templates: [
+        {
+          id: 'tpl_coach_new',
+          title: 'Coach plan',
+          sessionType: 'strength',
+          source: 'coach',
+          coachNote: 'Knee friendly',
+          assignedAt: '2031-01-01T00:00:00.000Z',
+          createdAt: '2031-01-01T00:00:00.000Z',
+          exercises: [
+            {
+              id: 'tpl_coach_new:0',
+              templateId: 'tpl_coach_new',
+              orderIndex: 0,
+              exerciseId: 'belt_squat',
+              restSeconds: 150,
+              targetSets: 4,
+              targetReps: '8-10',
+              exercise: {
+                id: 'belt_squat',
+                nameHu: 'Belt squat',
+                nameEn: 'Belt Squat',
+                category: 'machine',
+                equipment: 'machine',
+                movementPattern: 'squat',
+                primaryMuscles: [],
+                axialLoadScore: 1,
+                kneeStressScore: 2,
+                defaultSubstituteIds: [],
+                isCustom: false,
+              },
+            },
+          ],
+        },
+      ],
+      bookings: [
+        {
+          id: 'book_pull',
+          slotId: 'slot_new',
+          userId: repository.USER_PROFILE_ID,
+          modality: 'irl_gym',
+          startsAt: '2031-02-01T09:00:00.000Z',
+          endsAt: '2031-02-01T10:00:00.000Z',
+          locationOrLink: 'Gym',
+          coachNotes: 'Confirmed by coach',
+          status: 'confirmed',
+          syncStatus: 'synced',
+          createdAt: '2031-01-15T00:00:00.000Z',
+        },
+      ],
+      slots: [
+        {
+          id: 'slot_new',
+          startsAt: '2031-02-01T09:00:00.000Z',
+          endsAt: '2031-02-01T10:00:00.000Z',
+          modality: 'irl_gym',
+          locationOrLink: 'Gym',
+          isBooked: false,
+        },
+      ],
+    };
+
+    await repository.applyClientSyncPullPayload(db, pull);
+
+    const coachTemplates = await repository.getCoachAssignedTemplates(db);
+    const ids = coachTemplates.map((template) => template.id);
+    assert.ok(ids.includes('tpl_coach_new'), 'incoming coach plan applied');
+    assert.ok(!ids.includes('tpl_coach_stale'), 'withdrawn coach plan removed');
+    assert.equal(coachTemplates[0].coachNote, 'Knee friendly');
+    assert.equal(coachTemplates[0].exercises[0].exerciseId, 'belt_squat');
+
+    const slots = await repository.getCoachingSlots(db);
+    assert.ok(slots.some((slot) => slot.id === 'slot_new'), 'server slot present');
+    assert.ok(!slots.some((slot) => slot.id === 'slot_stale'), 'stale open slot removed');
+
+    const pulled = (await repository.getCoachingBookings(db)).find((b) => b.id === 'book_pull');
+    assert.ok(pulled !== undefined);
+    assert.equal(pulled.status, 'confirmed');
+    assert.equal(pulled.coachNotes, 'Confirmed by coach');
+    assert.equal(pulled.syncStatus, 'synced');
+
+    // Clean up so later sections see the database unchanged.
+    raw.prepare("DELETE FROM coaching_bookings WHERE id = 'book_pull'").run();
+    raw.prepare("DELETE FROM coaching_slots WHERE id IN ('slot_new','slot_stale')").run();
+    await repository.deleteTemplate(db, 'tpl_coach_new');
   });
 
   await check('markSessionsSynced flips only the given ids', async () => {

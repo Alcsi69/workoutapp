@@ -441,11 +441,21 @@ const hu = {
     previewTitle: 'Kimenő szinkronizálási csomag',
     dryRun: 'Nincs beállított backend — a csomag helyben elkészült.',
     remote: 'Sikeres feltöltés.',
+    remoteFull: 'Sikeres push + pull szinkronizálás.',
     noop: 'Nincs szinkronizálásra váró edzés.',
     sessionsInBatch: 'edzés a csomagban',
+    bookingsInBatch: 'foglalás a csomagban',
     noEndpoint: 'Nincs backend URL beállítva.',
     close: 'Bezárás',
     empty: 'Nincs mit megjeleníteni.',
+    serverUrlLabel: 'Szerver URL',
+    serverUrlHint:
+      'A coach backend címe. Android emulátoron: http://10.0.2.2:4000, vagy a géped LAN IP-címe.',
+    serverUrlPlaceholder: 'http://10.0.2.2:4000',
+    serverUrlSaved: 'Szerver URL mentve.',
+    serverUrlReset: 'Alapértelmezett visszaállítva.',
+    serverUrlDefault: 'Alapértelmezett',
+    pullApplied: 'Az edzői terv és a foglalások frissítve.',
   },
 
   plate: {

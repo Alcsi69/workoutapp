@@ -39,6 +39,11 @@ yarn-error.*
 # local db verification build output
 .verify-build/
 
+# standalone coach server (its own build output + local database)
+server/dist/
+server/data/*.db*
+server/node_modules/
+
 # generated native folders
 /ios
 /android

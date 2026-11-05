@@ -5,7 +5,10 @@ const expoConfig = require('eslint-config-expo/flat');
 module.exports = defineConfig([
   expoConfig,
   {
-    ignores: ['dist/*', '.verify-build/*'],
+    // `server/` and `admin-web/` are a standalone monorepo sibling with their own
+    // toolchains (Node + node:sqlite, static web). They are excluded here so the
+    // mobile `expo lint` run never walks into them.
+    ignores: ['dist/*', '.verify-build/*', 'server/**', 'admin-web/**'],
   },
   {
     rules: {

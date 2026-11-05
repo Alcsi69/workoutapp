@@ -100,6 +100,44 @@
     "batchId": "sync_m3k2f1ab",
     "generatedAt": "2026-11-04T18:30:00.000Z",
     "deviceId": "usr_local",
+    "profile": {
+      "userId": "usr_local",
+      "locale": "hu",
+      "biometrics": { "age": 25, "weightKg": 78.5, "heightCm": 180 },
+      "trainingProfile": {
+        "primaryGoal": "powerbuilding",
+        "experienceMonths": 36,
+        "strengthDaysPerWeek": 4,
+        "runningDaysPerWeek": 3,
+        "targetRunDistanceKm": 5,
+        "sessionDurationMinutes": 75,
+        "equipment": "full_gym"
+      },
+      "constraints": {
+        "jointLimitations": [
+          {
+            "area": "knees",
+            "severity": "avoid_heavy_axial_load",
+            "notes": "Avoid high-shear knee flexion under heavy load; use knee sleeves and flat shoes."
+          }
+        ],
+        "excludedExerciseIds": ["hack_squat"],
+        "preferredSubstitutions": { "hack_squat": "belt_squat" }
+      }
+    },
+    "billingProfile": {
+      "userId": "usr_local",
+      "fullName": "Kovács Anna",
+      "email": "anna@example.com",
+      "phone": "+36 30 123 4567",
+      "billingName": "Kovács Anna",
+      "billingCountry": "Magyarország",
+      "billingZip": "1052",
+      "billingCity": "Budapest",
+      "billingAddress": "Váci utca 12.",
+      "taxNumber": "12345678-1-42",
+      "updatedAt": "2026-11-04T18:00:00.000Z"
+    },
     "sessions": [
       {
         "id": "sess_m3k2f1ab",
@@ -184,6 +222,74 @@
           "perceivedEffortRpe": 7
         },
         "syncStatus": "local_dirty"
+      }
+    ]
+  },
+
+  "coachSyncPullResponseExample": {
+    "syncId": "sync_pull_m3k2f1ab",
+    "generatedAt": "2026-11-04T19:05:00.000Z",
+    "userId": "usr_local",
+    "templates": [
+      {
+        "id": "tpl_coach_1",
+        "title": "Edzői terv – Guggolás fókusz",
+        "sessionType": "strength",
+        "goal": "powerbuilding",
+        "source": "coach",
+        "coachNote": "Térdkímélő: alacsony tengelyterhelés, heti 2x guggolás.",
+        "assignedAt": "2026-11-04T19:00:00.000Z",
+        "createdAt": "2026-11-04T19:00:00.000Z",
+        "exercises": [
+          {
+            "id": "tpl_coach_1:0",
+            "templateId": "tpl_coach_1",
+            "orderIndex": 0,
+            "exerciseId": "belt_squat",
+            "restSeconds": 150,
+            "targetSets": 4,
+            "targetReps": "8-10",
+            "exercise": {
+              "id": "belt_squat",
+              "nameHu": "Öves guggolás",
+              "nameEn": "Belt Squat",
+              "category": "machine",
+              "equipment": "machine",
+              "movementPattern": "squat",
+              "primaryMuscles": ["quadriceps", "glutes"],
+              "axialLoadScore": 1,
+              "kneeStressScore": 2,
+              "defaultSubstituteIds": [],
+              "isCustom": false
+            }
+          }
+        ]
+      }
+    ],
+    "bookings": [
+      {
+        "id": "book_m3k2f1ab",
+        "slotId": "slot_online_1",
+        "userId": "usr_local",
+        "modality": "online_call",
+        "startsAt": "2026-11-07T18:00:00.000Z",
+        "endsAt": "2026-11-07T18:45:00.000Z",
+        "locationOrLink": "https://meet.example.com/coach/confirmed",
+        "clientNotes": "Szeretném átnézni a guggolás technikámat.",
+        "coachNotes": "Várunk a teremben, hozz térdvédőt.",
+        "status": "confirmed",
+        "syncStatus": "synced",
+        "createdAt": "2026-11-04T19:00:00.000Z"
+      }
+    ],
+    "slots": [
+      {
+        "id": "slot_online_4",
+        "startsAt": "2026-11-09T18:00:00.000Z",
+        "endsAt": "2026-11-09T18:45:00.000Z",
+        "modality": "online_call",
+        "locationOrLink": "https://meet.example.com/coach/session-4",
+        "isBooked": false
       }
     ]
   }
