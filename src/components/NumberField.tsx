@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { colors, radius, spacing, typography } from '../theme/tokens';
 
@@ -25,10 +25,14 @@ export function NumberField({
   placeholder,
 }: NumberFieldProps) {
   const [text, setText] = useState<string>(String(value));
-
-  useEffect(() => {
+  // Derive the draft from the incoming value during render (React's documented
+  // "adjust state when a prop changes" pattern) instead of an effect, which
+  // would schedule a second render pass after every parent update.
+  const [syncedValue, setSyncedValue] = useState<number>(value);
+  if (value !== syncedValue) {
+    setSyncedValue(value);
     setText(String(value));
-  }, [value]);
+  }
 
   const pattern = allowDecimal ? /^\d*[.,]?\d*$/ : /^\d*$/;
 

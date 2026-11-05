@@ -20,6 +20,8 @@ const {
   deriveMuscleGroup,
 } = require('../.verify-build/services/exerciseSearch.js');
 const repository = require('../.verify-build/db/repository.js');
+const analytics = require('../.verify-build/services/analytics.js');
+const loggerDrafts = require('../.verify-build/services/loggerDrafts.js');
 const {
   pickRecommendedSession,
   getWeekdayIndex,
@@ -1106,6 +1108,516 @@ async function main() {
     const result = await syncPendingWorkouts(db);
     assert.equal(result.mode, 'noop');
     assert.equal(result.sessionCount, 0);
+  });
+
+  console.log('\nprogressive overload + analytics (phase 5)');
+
+  await check('estimateOneRepMax blends Epley and Brzycki', () => {
+    assert.equal(analytics.estimateOneRepMax(100, 5), 114.6); // (116.67 + 112.5) / 2
+    assert.equal(analytics.estimateOneRepMax(100, 1), 101.7);
+    assert.equal(analytics.estimateOneRepMax(100, 12), 142); // (140 + 144) / 2
+    assert.ok(
+      analytics.estimateOneRepMax(100, 8) > analytics.estimateOneRepMax(100, 5),
+      'more reps at the same weight estimates a higher 1RM',
+    );
+  });
+
+  await check('estimateOneRepMax folds reps in reserve from RPE into the estimate', () => {
+    // 100 x 5 @8 leaves ~2 reps in reserve, so it estimates like a 7-rep set.
+    assert.equal(analytics.estimateOneRepMax(100, 5, 8), 121.7);
+    assert.equal(analytics.estimateOneRepMax(100, 5, 8), analytics.estimateOneRepMax(100, 7));
+    // A 1RM single must not be inflated by RPE.
+    assert.equal(analytics.estimateOneRepMax(100, 1, 10), analytics.estimateOneRepMax(100, 1));
+  });
+
+  await check('estimateOneRepMax clamps reps and tolerates junk input', () => {
+    assert.equal(analytics.estimateOneRepMax(100, 20), analytics.estimateOneRepMax(100, 12));
+    // Out-of-range RPE is ignored rather than throwing (hints must never break the logger).
+    assert.equal(analytics.estimateOneRepMax(100, 5, 12), 114.6);
+    assert.equal(analytics.estimateOneRepMax(100, 5, 0), 114.6);
+    assert.equal(analytics.estimateOneRepMax(0, 5), 0);
+    assert.equal(analytics.estimateOneRepMax(-20, 5), 0);
+    assert.equal(analytics.estimateOneRepMax(100, 0), 0);
+    assert.equal(Number.isNaN(analytics.estimateOneRepMax(Number.NaN, 5)), false);
+  });
+
+  await check('parseRepRange reads rep prescriptions but not distances', () => {
+    assert.deepEqual(analytics.parseRepRange('6-8'), { min: 6, max: 8 });
+    assert.deepEqual(analytics.parseRepRange('5'), { min: 5, max: 5 });
+    assert.deepEqual(analytics.parseRepRange('5x5'), { min: 5, max: 5 });
+    assert.equal(analytics.parseRepRange('5 km'), null);
+    assert.equal(analytics.parseRepRange('AMRAP'), null);
+    assert.equal(analytics.parseRepRange(undefined), null);
+  });
+
+  const makeSet = (setNumber, setType, actualWeightKg, actualReps, rpe) => {
+    const set = {
+      setNumber,
+      setType,
+      actualWeightKg,
+      actualReps,
+      completedAt: '2026-10-01T10:00:00.000Z',
+    };
+    if (rpe !== undefined) {
+      set.rpe = rpe;
+    }
+    return set;
+  };
+
+  await check('computeNextTargetHint adds 2.5 kg off an easy top-of-range set', () => {
+    const hint = analytics.computeNextTargetHint(
+      [makeSet(1, 'top_set', 100, 8, 8)],
+      'powerbuilding',
+      '6-8',
+    );
+    assert.equal(hint.reason, 'top_of_range_easy');
+    assert.equal(hint.weightKg, 102.5);
+    assert.equal(hint.reps, 6); // reset to the bottom of the range
+    assert.equal(hint.deltaKg, 2.5);
+    assert.equal(hint.deltaReps, -2);
+  });
+
+  await check('computeNextTargetHint adds a rep below the top of the range', () => {
+    const hint = analytics.computeNextTargetHint(
+      [makeSet(1, 'working', 100, 5, 8)],
+      'powerbuilding',
+      '6-8',
+    );
+    assert.equal(hint.reason, 'add_rep');
+    assert.equal(hint.weightKg, 100);
+    assert.equal(hint.reps, 6);
+    assert.equal(hint.deltaKg, 0);
+    assert.equal(hint.deltaReps, 1);
+  });
+
+  await check('computeNextTargetHint uses the heaviest working set, not a warmup', () => {
+    const hint = analytics.computeNextTargetHint(
+      [makeSet(1, 'warmup', 40, 10, 6), makeSet(2, 'working', 100, 5, 8)],
+      'strength',
+      '6-8',
+    );
+    assert.equal(hint.weightKg, 100);
+    assert.equal(hint.reps, 6);
+  });
+
+  await check('computeNextTargetHint applies the goal RPE ceiling', () => {
+    const hardTopSet = [makeSet(1, 'top_set', 100, 8, 9)];
+    // 9.0 is over the strength/powerbuilding ceiling of 8.5 -> repeat the load.
+    assert.equal(
+      analytics.computeNextTargetHint(hardTopSet, 'strength', '6-8').reason,
+      'top_of_range_hard',
+    );
+    assert.equal(
+      analytics.computeNextTargetHint(hardTopSet, 'powerbuilding', '6-8').weightKg,
+      100,
+    );
+    // Hypertrophy tolerates RPE 9.0 before the bar goes up.
+    assert.equal(
+      analytics.computeNextTargetHint(hardTopSet, 'hypertrophy', '6-8').reason,
+      'top_of_range_easy',
+    );
+  });
+
+  await check('computeNextTargetHint holds the load after a near-failure set', () => {
+    const hint = analytics.computeNextTargetHint(
+      [makeSet(1, 'working', 100, 5, 9.5)],
+      'strength',
+      '6-8',
+    );
+    assert.equal(hint.reason, 'hold_weight');
+    assert.equal(hint.weightKg, 100);
+    assert.equal(hint.reps, 5);
+    assert.equal(hint.deltaKg, 0);
+    assert.equal(hint.deltaReps, 0);
+  });
+
+  await check('computeNextTargetHint returns null without usable history', () => {
+    assert.equal(analytics.computeNextTargetHint(undefined, 'strength', '6-8'), null);
+    assert.equal(analytics.computeNextTargetHint([], 'strength', '6-8'), null);
+    assert.equal(
+      analytics.computeNextTargetHint([makeSet(1, 'warmup', 40, 10, 6)], 'strength', '6-8'),
+      null,
+    );
+  });
+
+  await check('isNewPersonalRecord compares against the best estimated 1RM', () => {
+    const best = 124;
+    assert.equal(analytics.isNewPersonalRecord(110, 3, best, 9), false); // 122.3
+    assert.equal(analytics.isNewPersonalRecord(110, 4, best, 9), true); // 126.0
+    assert.equal(analytics.isNewPersonalRecord(105, 5, best, 9), false); // exactly the PR
+    // The first set ever logged for an exercise is a PR by definition...
+    assert.equal(analytics.isNewPersonalRecord(60, 5, 0), true);
+    // ...but an empty row never is.
+    assert.equal(analytics.isNewPersonalRecord(0, 5, 0), false);
+    assert.equal(analytics.isNewPersonalRecord(100, 0, 0), false);
+  });
+
+  // --- Fixtures: three bench sessions + a block of runs ---------------------
+  // Written through raw SQL so the dates (and therefore the ordering assertions
+  // below) are exact; the read helpers are what these checks exercise.
+  const insertStrengthSession = ({ sessionId, title, completedAt, exerciseId, sets }) => {
+    raw
+      .prepare(
+        `INSERT INTO session_logs
+           (id, program_day_id, session_type, title, started_at, completed_at, sync_status)
+         VALUES (?, NULL, 'strength', ?, ?, ?, 'synced')`,
+      )
+      .run(sessionId, title, completedAt, completedAt);
+    const blockId = `${sessionId}:block0`;
+    raw
+      .prepare(
+        `INSERT INTO session_exercise_blocks
+           (id, session_id, order_index, exercise_id, substituted_from_exercise_id,
+            rest_seconds, notes, target_sets, target_reps)
+         VALUES (?, ?, 0, ?, NULL, 120, NULL, ?, '6-8')`,
+      )
+      .run(blockId, sessionId, exerciseId, sets.length);
+    for (const [index, set] of sets.entries()) {
+      raw
+        .prepare(
+          `INSERT INTO set_logs
+             (id, block_id, set_number, set_type, target_weight_kg, actual_weight_kg,
+              target_reps, actual_reps, rpe, completed_at)
+           VALUES (?, ?, ?, ?, NULL, ?, '6-8', ?, ?, ?)`,
+        )
+        .run(
+          `${sessionId}:set${index}`,
+          blockId,
+          set.setNumber,
+          set.setType,
+          set.actualWeightKg,
+          set.actualReps,
+          set.rpe ?? null,
+          completedAt,
+        );
+    }
+  };
+
+  insertStrengthSession({
+    sessionId: 'sess_pr_1',
+    title: 'Bench day 1',
+    completedAt: '2026-10-01T10:00:00.000Z',
+    exerciseId: 'bench_press',
+    sets: [makeSet(1, 'working', 100, 5, 8)], // 1RM 121.7
+  });
+  insertStrengthSession({
+    sessionId: 'sess_pr_2',
+    title: 'Bench day 2',
+    completedAt: '2026-10-08T10:00:00.000Z',
+    exerciseId: 'bench_press',
+    sets: [
+      makeSet(1, 'working', 105, 5, 9), // 1RM 124.0 -> all-time best
+      makeSet(2, 'working', 105, 4, 9.5), // 1RM 118.5
+    ],
+  });
+  insertStrengthSession({
+    sessionId: 'sess_pr_3',
+    title: 'Bench day 3',
+    completedAt: '2026-10-15T10:00:00.000Z',
+    exerciseId: 'bench_press',
+    sets: [makeSet(1, 'working', 110, 3, 9)], // 1RM 122.3
+  });
+  insertStrengthSession({
+    sessionId: 'sess_press_1',
+    title: 'Press day',
+    completedAt: '2026-10-18T10:00:00.000Z',
+    exerciseId: 'overhead_press',
+    sets: [makeSet(1, 'warmup', 40, 10, 6), makeSet(2, 'working', 60, 8, 8)],
+  });
+
+  const lastPerformance = await repository.getLastPerformanceForExercises(db, [
+    'bench_press',
+    'overhead_press',
+    'not_an_exercise',
+  ]);
+
+  await check('getLastPerformanceForExercises returns the latest session per exercise', () => {
+    assert.equal(lastPerformance.size, 2); // exercises without history are absent
+    assert.equal(lastPerformance.has('not_an_exercise'), false);
+
+    const bench = lastPerformance.get('bench_press');
+    assert.equal(bench.sessionId, 'sess_pr_3');
+    assert.equal(bench.sessionTitle, 'Bench day 3');
+    assert.equal(bench.completedAt, '2026-10-15T10:00:00.000Z');
+    assert.equal(bench.sets.length, 1);
+    assert.equal(bench.sets[0].setNumber, 1);
+    assert.equal(bench.sets[0].setType, 'working');
+    assert.equal(bench.sets[0].actualWeightKg, 110);
+    assert.equal(bench.sets[0].actualReps, 3);
+    assert.equal(bench.sets[0].rpe, 9);
+    assert.equal(bench.topSet.weightKg, 110);
+    assert.equal(bench.topSet.reps, 3);
+    assert.equal(bench.topSet.oneRepMaxKg, 122.3);
+    // The all-time best is still the 105 x 5 @9 two sessions earlier.
+    assert.equal(bench.bestOneRepMaxKg, 124);
+    assert.equal(bench.bestSet.weightKg, 105);
+    assert.equal(bench.bestSet.reps, 5);
+    assert.equal(bench.bestSet.sessionId, 'sess_pr_2');
+  });
+
+  await check('getLastPerformanceForExercises keeps warmups out of the reference set', () => {
+    const press = lastPerformance.get('overhead_press');
+    assert.equal(press.sets.length, 2);
+    assert.equal(press.topSet.weightKg, 60);
+    assert.equal(press.bestSet.weightKg, 60);
+  });
+
+  await check('getLastPerformanceForExercises honours excludeSessionId', async () => {
+    const withoutLatest = await repository.getLastPerformanceForExercises(db, ['bench_press'], 'sess_pr_3');
+    const bench = withoutLatest.get('bench_press');
+    assert.equal(bench.sessionId, 'sess_pr_2');
+    assert.equal(bench.sets.length, 2);
+    assert.equal(bench.completedAt, '2026-10-08T10:00:00.000Z');
+
+    // Excluding the session that holds the PR lowers the all-time best too.
+    const withoutPr = await repository.getLastPerformanceForExercises(db, ['bench_press'], 'sess_pr_2');
+    const afterPr = withoutPr.get('bench_press');
+    assert.equal(afterPr.sessionId, 'sess_pr_3');
+    assert.equal(afterPr.bestOneRepMaxKg, 122.3);
+    assert.equal(afterPr.bestSet.sessionId, 'sess_pr_3');
+
+    // Excluding the exercise's only session removes it from the map entirely.
+    const pressOnly = await repository.getLastPerformanceForExercises(db, ['overhead_press'], 'sess_press_1');
+    assert.equal(pressOnly.size, 0);
+  });
+
+  await check('getLastPerformanceForExercises short-circuits an empty id list', async () => {
+    const empty = await repository.getLastPerformanceForExercises(db, []);
+    assert.equal(empty.size, 0);
+  });
+
+  await check('getExerciseProgressionStats returns chronological session history', async () => {
+    const stats = await repository.getExerciseProgressionStats(db, 'bench_press');
+    assert.equal(stats.length, 3);
+    assert.deepEqual(
+      stats.map((point) => point.date),
+      ['2026-10-01T10:00:00.000Z', '2026-10-08T10:00:00.000Z', '2026-10-15T10:00:00.000Z'],
+    );
+    assert.equal(stats[0].sessionId, 'sess_pr_1');
+    assert.equal(stats[0].topWeightKg, 100);
+    assert.equal(stats[0].topReps, 5);
+    assert.equal(stats[0].estimatedOneRepMaxKg, 121.7);
+    assert.equal(stats[0].volumeKg, 500);
+    assert.equal(stats[0].setCount, 1);
+
+    assert.equal(stats[1].topWeightKg, 105);
+    assert.equal(stats[1].topReps, 5);
+    assert.equal(stats[1].estimatedOneRepMaxKg, 124);
+    assert.equal(stats[1].volumeKg, 945); // 105x5 + 105x4
+    assert.equal(stats[1].setCount, 2);
+
+    assert.equal(stats[2].volumeKg, 330);
+    assert.equal(stats[2].estimatedOneRepMaxKg, 122.3);
+  });
+
+  await check('getExerciseProgressionStats keeps the most recent N sessions', async () => {
+    const limited = await repository.getExerciseProgressionStats(db, 'bench_press', 2);
+    assert.equal(limited.length, 2);
+    assert.equal(limited[0].sessionId, 'sess_pr_2');
+    assert.equal(limited[1].sessionId, 'sess_pr_3');
+  });
+
+  await check('getExerciseProgressionStats is empty for an exercise with no sets', async () => {
+    assert.deepEqual(await repository.getExerciseProgressionStats(db, 'seated_calf_raise'), []);
+  });
+
+  const insertRun = (sessionId, title, completedAt, distanceKm, durationSeconds, rpe) => {
+    raw
+      .prepare(
+        `INSERT INTO session_logs
+           (id, program_day_id, session_type, title, started_at, completed_at, sync_status)
+         VALUES (?, NULL, 'running', ?, ?, ?, 'synced')`,
+      )
+      .run(sessionId, title, completedAt, completedAt);
+    raw
+      .prepare(
+        `INSERT INTO running_metrics
+           (session_id, distance_km, duration_seconds, avg_pace_seconds_per_km, perceived_effort_rpe)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(sessionId, distanceKm, durationSeconds, durationSeconds / distanceKm, rpe);
+  };
+
+  insertRun('run_easy_1', 'Easy 5K', '2026-09-20T07:00:00.000Z', 5, 1800, 7); // 6:00/km
+  insertRun('run_easy_2', 'Easy 5K', '2026-09-27T07:00:00.000Z', 5, 1650, 8); // 5:30/km
+  insertRun('run_long_3', 'Long 7K', '2026-10-04T07:00:00.000Z', 7, 2380, 7); // 5:40/km
+  insertRun('run_tempo_4', 'Tempo 5.2K', '2026-10-11T07:00:00.000Z', 5.2, 1612, 8); // 5:10/km
+  insertRun('run_long_10k', 'Long 10K', '2026-10-18T07:00:00.000Z', 10, 3000, 6); // 5:00/km
+
+  const runs = await repository.getRunningProgressionStats(db);
+
+  await check('getRunningProgressionStats returns recent runs oldest first', async () => {
+    assert.equal(runs.length, 5);
+    assert.equal(runs[0].sessionId, 'run_easy_1');
+    assert.equal(runs[4].sessionId, 'run_long_10k');
+    assert.equal(runs[0].distanceKm, 5);
+    assert.equal(runs[0].durationSeconds, 1800);
+    assert.equal(runs[0].avgPaceSecondsPerKm, 360);
+    assert.equal(runs[0].rpe, 7);
+    assert.equal(runs[4].avgPaceSecondsPerKm, 300);
+
+    const limited = await repository.getRunningProgressionStats(db, 2);
+    assert.deepEqual(
+      limited.map((run) => run.sessionId),
+      ['run_tempo_4', 'run_long_10k'],
+    );
+  });
+
+  await check('summarizeRunningProgression totals km, best 5K/7K pace, and trend', () => {
+    const summary = analytics.summarizeRunningProgression(runs);
+    assert.equal(summary.sessionCount, 5);
+    assert.equal(summary.totalDistanceKm, 32.2);
+    assert.equal(summary.averagePaceSecondsPerKm, 328); // (360+330+340+310+300) / 5
+    assert.equal(summary.best5k.paceSecondsPerKm, 310);
+    assert.equal(summary.best5k.distanceKm, 5.2);
+    assert.equal(summary.best5k.sessionId, 'run_tempo_4');
+    // The 10K is too far from either nominal distance to count as a 7K effort.
+    assert.equal(summary.best7k.paceSecondsPerKm, 340);
+    assert.equal(summary.best7k.sessionId, 'run_long_3');
+    assert.equal(summary.trend, 'improving');
+
+    const empty = analytics.summarizeRunningProgression([]);
+    assert.equal(empty.sessionCount, 0);
+    assert.equal(empty.totalDistanceKm, 0);
+    assert.equal(empty.trend, 'none');
+    assert.equal(empty.best5k, undefined);
+
+    // A single run cannot show a trend; a slower recent block declines.
+    assert.equal(
+      analytics.computeRunningTrend([
+        { sessionId: 'a', date: '2026-01-01T00:00:00.000Z', distanceKm: 5, durationSeconds: 1500, avgPaceSecondsPerKm: 300 },
+      ]),
+      'none',
+    );
+    assert.equal(
+      analytics.computeRunningTrend([
+        { sessionId: 'a', date: '2026-01-01T00:00:00.000Z', distanceKm: 5, durationSeconds: 1500, avgPaceSecondsPerKm: 300 },
+        { sessionId: 'b', date: '2026-01-08T00:00:00.000Z', distanceKm: 5, durationSeconds: 1600, avgPaceSecondsPerKm: 320 },
+      ]),
+      'declining',
+    );
+  });
+
+  await check('totalVolumeKg drops warmups unless asked for them', () => {
+    const sets = [
+      makeSet(1, 'warmup', 40, 10),
+      makeSet(2, 'working', 100, 5),
+    ];
+    assert.equal(analytics.totalVolumeKg(sets), 500);
+    assert.equal(analytics.totalVolumeKg(sets, { includeWarmups: true }), 900);
+  });
+
+  console.log('\nlogger drafts: prefill + PR badges (phase 5)');
+
+  const draftBlock = {
+    id: 'block_draft',
+    sessionId: 'sess_draft',
+    orderIndex: 0,
+    exerciseId: 'bench_press',
+    restSeconds: 120,
+    targetSets: 4,
+    targetReps: '6-8',
+    sets: [],
+  };
+  const previousForDrafts = [makeSet(1, 'working', 100, 8, 8), makeSet(2, 'working', 100, 8, 8)];
+
+  await check('prefillValues copies a matching set and falls back to the last one', () => {
+    assert.equal(loggerDrafts.prefillValues(1, []), null);
+    assert.equal(loggerDrafts.prefillValues(1, [makeSet(1, 'working', 0, 0)]), null);
+    assert.deepEqual(loggerDrafts.prefillValues(2, previousForDrafts), { weight: '100', reps: '8' });
+    // Today's prescription has more sets than were performed last time.
+    assert.deepEqual(loggerDrafts.prefillValues(4, previousForDrafts), { weight: '100', reps: '8' });
+  });
+
+  await check('buildInitialDrafts prefills open rows so one tap logs a set', () => {
+    const drafts = loggerDrafts.buildInitialDrafts(draftBlock, previousForDrafts);
+    assert.equal(drafts.length, 4);
+    assert.deepEqual(drafts.map((draft) => draft.weight), ['100', '100', '100', '100']);
+    assert.deepEqual(drafts.map((draft) => draft.reps), ['8', '8', '8', '8']);
+    // RPE is never inherited: it describes this set, not the last one.
+    assert.deepEqual(drafts.map((draft) => draft.rpe), [null, null, null, null]);
+    assert.ok(drafts.every((draft) => draft.completed === false && draft.setLogId === null));
+    assert.equal(drafts[0].key, 'block_draft:1');
+  });
+
+  await check('buildInitialDrafts keeps logged rows and leaves rows empty without history', () => {
+    const withLoggedSet = {
+      ...draftBlock,
+      sets: [
+        {
+          id: 'set_logged',
+          setNumber: 1,
+          setType: 'working',
+          actualWeightKg: 105,
+          actualReps: 6,
+          rpe: 9,
+          targetReps: '6-8',
+          completedAt: '2026-10-20T10:00:00.000Z',
+        },
+      ],
+    };
+    const drafts = loggerDrafts.buildInitialDrafts(withLoggedSet, previousForDrafts);
+    assert.equal(drafts.length, 4);
+    assert.equal(drafts[0].completed, true);
+    assert.equal(drafts[0].setLogId, 'set_logged');
+    assert.equal(drafts[0].weight, '105');
+    assert.equal(drafts[0].rpe, 9);
+    assert.equal(drafts[1].completed, false);
+    assert.equal(drafts[1].weight, '100');
+
+    const empty = loggerDrafts.buildInitialDrafts(draftBlock, []);
+    assert.equal(empty.length, 4);
+    assert.ok(empty.every((draft) => draft.weight === '' && draft.reps === ''));
+  });
+
+  const makeDraft = (key, setNumber, weight, reps, rpe, completed = true) => ({
+    key,
+    setNumber,
+    setType: 'working',
+    weight,
+    reps,
+    rpe,
+    setLogId: completed ? `log_${key}` : null,
+    completed,
+  });
+
+  await check('findPersonalRecords flags only rows that beat the previous best', () => {
+    const records = loggerDrafts.findPersonalRecords(
+      [makeDraft('a', 1, '110', '3', 9), makeDraft('b', 2, '110', '4', 9)],
+      124,
+    );
+    // 110x3 @9 estimates 122.3 (below the 124 baseline); 110x4 @9 estimates 126.0.
+    assert.deepEqual(Object.keys(records), ['b']);
+    assert.equal(records.b, 126);
+  });
+
+  await check('findPersonalRecords treats the first-ever set as a PR and skips open rows', () => {
+    const records = loggerDrafts.findPersonalRecords(
+      [makeDraft('a', 1, '100', '5', 8), makeDraft('b', 2, '', '', null, false)],
+      0,
+    );
+    assert.deepEqual(Object.keys(records), ['a']);
+    assert.equal(records.a, 121.7);
+    // Unchecking a row drops its badge.
+    assert.deepEqual(
+      loggerDrafts.findPersonalRecords([makeDraft('a', 1, '100', '5', 8, false)], 0),
+      {},
+    );
+  });
+
+  await check('findPersonalRecords walks the session PR chain in set order', () => {
+    const records = loggerDrafts.findPersonalRecords(
+      [
+        makeDraft('a', 1, '100', '8', 8),
+        makeDraft('b', 2, '102.5', '8', 8),
+        makeDraft('c', 3, '100', '8', 8),
+      ],
+      0,
+    );
+    // 1 and 2 raise the bar; 3 repeats set 1's load, so it is no longer a PR.
+    assert.deepEqual(Object.keys(records), ['a', 'b']);
+    assert.equal(records.a, 133.3);
+    assert.equal(records.b, 136.7);
   });
 
   await check('no foreign key violations', () => {

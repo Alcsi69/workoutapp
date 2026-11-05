@@ -60,3 +60,22 @@ export function formatPaceHu(secondsPerKm: number): string {
   const seconds = total % 60;
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
+
+/** "82,5 kg" — Hungarian decimal comma, no trailing zeros ("100 kg"). */
+export function formatWeightKg(weightKg: number): string {
+  if (!Number.isFinite(weightKg)) {
+    return '—';
+  }
+  const text = Number.isInteger(weightKg)
+    ? weightKg.toString()
+    : weightKg.toFixed(2).replace(/0+$/, '').replace(/\.$/, '').replace('.', ',');
+  return `${text} ${hu.common.kg}`;
+}
+
+/** "114,6 kg" for an estimated 1RM, or an em dash when nothing could be estimated. */
+export function formatOneRepMaxKg(oneRepMaxKg: number): string {
+  if (!(oneRepMaxKg > 0)) {
+    return '—';
+  }
+  return `${oneRepMaxKg.toFixed(1).replace('.', ',')} ${hu.common.kg}`;
+}

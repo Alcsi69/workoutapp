@@ -2,23 +2,31 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Button } from '../../components/Button';
-import { Pill } from '../../components/Badge';
+import { Chip, Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
 import { SyncCard } from '../../components/SyncCard';
+import { CORE_LIFT_IDS, ProgressionView } from '../../components/history/ProgressionView';
 import { getDatabase } from '../../db/client';
-import { getSessionDetail, getSessionHistory } from '../../db/repository';
+import {
+  getExerciseCatalog,
+  getSessionDetail,
+  getSessionHistory,
+} from '../../db/repository';
 import type { SessionHistorySummary } from '../../db/repository';
+import { totalVolumeKg } from '../../services/analytics';
 import { formatDateTimeHu, formatDurationHu, formatPaceHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
-import type { WorkoutSessionLog } from '../../types/workout';
+import type { ExerciseCatalogItem, WorkoutSessionLog } from '../../types/workout';
 
-/** Total tonnage (kg) over every logged set in a session. */
-function totalVolumeKg(detail: WorkoutSessionLog): number {
-  return detail.exerciseBlocks.reduce(
-    (sum, block) =>
-      sum + block.sets.reduce((blockSum, set) => blockSum + set.actualWeightKg * set.actualReps, 0),
-    0,
+/** Which list the Előzmények tab shows. */
+type HistoryView = 'log' | 'progress';
+
+/** Total tonnage (kg) over every logged set in a session, warmups included. */
+function sessionVolumeKg(detail: WorkoutSessionLog): number {
+  return totalVolumeKg(
+    detail.exerciseBlocks.flatMap((block) => block.sets),
+    { includeWarmups: true },
   );
 }
 
@@ -129,7 +137,7 @@ function SessionRow({ session }: { session: SessionHistorySummary }) {
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>{hu.screens.history.volume}</Text>
               <Text style={styles.summaryValue}>
-                {Math.round(totalVolumeKg(detail))} {hu.common.kg}
+                {Math.round(sessionVolumeKg(detail))} {hu.common.kg}
               </Text>
             </View>
           ) : null}
@@ -164,16 +172,26 @@ function SessionRow({ session }: { session: SessionHistorySummary }) {
 
 export default function HistoryScreen() {
   const [sessions, setSessions] = useState<SessionHistorySummary[] | null>(null);
+  const [catalog, setCatalog] = useState<ExerciseCatalogItem[]>([]);
+  const [view, setView] = useState<HistoryView>('log');
+  const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(CORE_LIFT_IDS[0]);
   const [error, setError] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       getDatabase()
-        .then((db) => getSessionHistory(db))
-        .then((next) => {
+        .then(async (db) => {
+          const [nextSessions, nextCatalog] = await Promise.all([
+            getSessionHistory(db),
+            getExerciseCatalog(db),
+          ]);
+          return { nextSessions, nextCatalog };
+        })
+        .then(({ nextSessions, nextCatalog }) => {
           if (!cancelled) {
-            setSessions(next);
+            setSessions(nextSessions);
+            setCatalog(nextCatalog);
             setError(null);
           }
         })
@@ -218,15 +236,37 @@ export default function HistoryScreen() {
 
   return (
     <Screen title={hu.tabs.history} subtitle={hu.screens.history.subtitle} scroll={false}>
-      <FlatList
-        data={sessions}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => <SessionRow session={item} />}
-        ListHeaderComponent={<SyncCard />}
-        ListHeaderComponentStyle={styles.listHeader}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-      />
+      <View style={styles.toggleRow}>
+        <Chip
+          label={hu.screens.history.tabs.log}
+          selected={view === 'log'}
+          onPress={() => setView('log')}
+        />
+        <Chip
+          label={hu.screens.history.tabs.progress}
+          selected={view === 'progress'}
+          onPress={() => setView('progress')}
+        />
+      </View>
+
+      {view === 'log' ? (
+        <FlatList
+          data={sessions}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => <SessionRow session={item} />}
+          ListHeaderComponent={<SyncCard />}
+          ListHeaderComponentStyle={styles.listHeader}
+          contentContainerStyle={styles.list}
+          style={styles.listBody}
+          showsVerticalScrollIndicator={false}
+        />
+      ) : (
+        <ProgressionView
+          catalog={catalog}
+          selectedExerciseId={selectedExerciseId}
+          onSelectExercise={setSelectedExerciseId}
+        />
+      )}
     </Screen>
   );
 }
@@ -242,6 +282,14 @@ const styles = StyleSheet.create({
   list: {
     gap: spacing.md,
     paddingBottom: spacing.xxl,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingBottom: spacing.md,
+  },
+  listBody: {
+    flex: 1,
   },
   listHeader: {
     marginBottom: spacing.md,

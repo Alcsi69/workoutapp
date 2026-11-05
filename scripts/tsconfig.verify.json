@@ -17,6 +17,8 @@
     "../src/db/seed.ts",
     "../src/db/catalogData.ts",
     "../src/db/repository.ts",
+    "../src/services/analytics.ts",
+    "../src/services/loggerDrafts.ts",
     "../src/services/exerciseSearch.ts",
     "../src/services/recommendation.ts",
     "../src/services/routineGenerator.ts",

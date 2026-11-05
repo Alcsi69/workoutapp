@@ -7,15 +7,26 @@
 // - writes that touch more than one table run inside a transaction
 
 import type { SQLiteDatabase } from 'expo-sqlite';
+import {
+  RPE_MAX,
+  RPE_MIN,
+  estimateOneRepMax,
+  topSetOf,
+  totalVolumeKg,
+} from '../services/analytics';
 import type {
   CustomExerciseInput,
   CustomTemplateInput,
   ExerciseCatalogItem,
   ExerciseCategory,
+  ExerciseProgressionPoint,
   JointConstraint,
+  LastPerformance,
   MovementPattern,
   OnboardingPayload,
+  PreviousPerformanceSet,
   RunningMetrics,
+  RunningProgressionPoint,
   SessionExerciseBlock,
   SessionType,
   SetLog,
@@ -1072,9 +1083,6 @@ export async function startSessionFromTemplate(
 // later sync pass can pick up exactly what changed. Screens read the resulting
 // graph back through getSessionDetail.
 
-const RPE_MIN = 5;
-const RPE_MAX = 10;
-
 /** RPE is optional; when present it must be 5.0-10.0 (0.5 steps are the UI's job). */
 function normalizeRpe(rpe: number | undefined): number | null {
   if (rpe === undefined) {
@@ -1584,4 +1592,253 @@ export async function markSessionsSynced(
     changes = result.changes;
   });
   return changes;
+}
+
+// --- Progressive overload memory (Phase 5) ----------------------------------
+//
+// The logger's "Előző edzés" hints, the PR badges, and the Fejlődés view all read
+// the same thing: every completed set ever logged for an exercise. One query per
+// screen (rows joined to their session) keeps the round trips down; the 1RM math
+// itself lives in services/analytics.ts.
+
+interface LoggedSetRow {
+  exercise_id: string;
+  session_id: string;
+  session_title: string;
+  session_completed_at: string;
+  set_number: number;
+  set_type: SetType;
+  actual_weight_kg: number;
+  actual_reps: number;
+  rpe: number | null;
+  completed_at: string;
+}
+
+const SELECT_LOGGED_SETS_SQL = `
+  SELECT b.exercise_id, s.id AS session_id, s.title AS session_title,
+         s.completed_at AS session_completed_at,
+         l.set_number, l.set_type, l.actual_weight_kg, l.actual_reps,
+         l.rpe, l.completed_at
+  FROM set_logs l
+  JOIN session_exercise_blocks b ON b.id = l.block_id
+  JOIN session_logs s ON s.id = b.session_id
+  WHERE s.completed_at IS NOT NULL
+`;
+
+/** Rows of completed sessions, newest session first, sets in set order. */
+async function getLoggedSetRows(
+  db: SQLiteDatabase,
+  where: string,
+  params: readonly (string | number)[],
+): Promise<LoggedSetRow[]> {
+  return db.getAllAsync<LoggedSetRow>(
+    `${SELECT_LOGGED_SETS_SQL} AND ${where}
+     ORDER BY s.completed_at DESC, l.set_number;`,
+    ...params,
+  );
+}
+
+function toPreviousSet(row: LoggedSetRow): PreviousPerformanceSet {
+  const set: PreviousPerformanceSet = {
+    setNumber: row.set_number,
+    setType: row.set_type,
+    actualWeightKg: row.actual_weight_kg,
+    actualReps: row.actual_reps,
+    completedAt: row.completed_at,
+  };
+  if (row.rpe !== null) {
+    set.rpe = row.rpe;
+  }
+  return set;
+}
+
+/**
+ * Heaviest estimated 1RM across the given rows (warmups excluded — they measure
+ * nothing about the working load), or null when nothing is estimable. Unlike
+ * `topSetOf` this maximises the *estimate*, so 100 kg x 5 can beat 110 kg x 3.
+ */
+function findBestOneRepMaxRow(rows: readonly LoggedSetRow[]): LoggedSetRow | null {
+  let best: LoggedSetRow | null = null;
+  let bestOneRepMaxKg = 0;
+  for (const row of rows) {
+    if (row.set_type === 'warmup') {
+      continue;
+    }
+    const estimate = estimateOneRepMax(
+      row.actual_weight_kg,
+      row.actual_reps,
+      row.rpe ?? undefined,
+    );
+    if (estimate > bestOneRepMaxKg) {
+      bestOneRepMaxKg = estimate;
+      best = row;
+    }
+  }
+  return best;
+}
+
+/**
+ * "Last time" memory for a set of exercises: for each id, the most recent
+ * completed session that logged it (its sets and top set) plus the all-time best
+ * estimated 1RM across every completed session.
+ *
+ * `excludeSessionId` drops one session entirely — the logger passes the session
+ * being logged so a re-opened workout is never compared against itself, and so
+ * the PR baseline stays the *previous* best.
+ *
+ * Exercises with no history are simply absent from the map.
+ */
+export async function getLastPerformanceForExercises(
+  db: SQLiteDatabase,
+  exerciseIds: readonly string[],
+  excludeSessionId?: string,
+): Promise<Map<string, LastPerformance>> {
+  const result = new Map<string, LastPerformance>();
+  if (exerciseIds.length === 0) {
+    return result;
+  }
+
+  const placeholders = exerciseIds.map(() => '?').join(', ');
+  const rows = await getLoggedSetRows(db, `b.exercise_id IN (${placeholders})`, exerciseIds);
+
+  const byExercise = new Map<string, LoggedSetRow[]>();
+  for (const row of rows) {
+    if (excludeSessionId !== undefined && row.session_id === excludeSessionId) {
+      continue;
+    }
+    const list = byExercise.get(row.exercise_id) ?? [];
+    list.push(row);
+    byExercise.set(row.exercise_id, list);
+  }
+
+  for (const [exerciseId, exerciseRows] of byExercise) {
+    // Rows arrive newest session first, so the head carries the last performance.
+    const lastSessionId = exerciseRows[0].session_id;
+    const lastSessionRows = exerciseRows.filter((row) => row.session_id === lastSessionId);
+    const sets = lastSessionRows.map(toPreviousSet);
+    const topSet = topSetOf(sets);
+
+    const bestRow = findBestOneRepMaxRow(exerciseRows);
+    const lastPerformance: LastPerformance = {
+      exerciseId,
+      sessionId: lastSessionId,
+      sessionTitle: lastSessionRows[0].session_title,
+      completedAt: lastSessionRows[0].session_completed_at,
+      sets,
+      bestOneRepMaxKg:
+        bestRow === null
+          ? 0
+          : estimateOneRepMax(bestRow.actual_weight_kg, bestRow.actual_reps, bestRow.rpe ?? undefined),
+    };
+    if (topSet !== null) {
+      lastPerformance.topSet = topSet;
+    }
+    if (bestRow !== null) {
+      const bestSet: LastPerformance['bestSet'] = {
+        weightKg: bestRow.actual_weight_kg,
+        reps: bestRow.actual_reps,
+        oneRepMaxKg: lastPerformance.bestOneRepMaxKg,
+        sessionId: bestRow.session_id,
+        completedAt: bestRow.session_completed_at,
+      };
+      if (bestRow.rpe !== null) {
+        bestSet.rpe = bestRow.rpe;
+      }
+      lastPerformance.bestSet = bestSet;
+    }
+    result.set(exerciseId, lastPerformance);
+  }
+
+  return result;
+}
+
+/**
+ * Session-by-session progression for one exercise, oldest first (chart order):
+ * the top set (weight x reps), its estimated 1RM, and the working-set tonnage.
+ * `limit` keeps the most recent N sessions; <= 0 returns every session.
+ */
+export async function getExerciseProgressionStats(
+  db: SQLiteDatabase,
+  exerciseId: string,
+  limit = 20,
+): Promise<ExerciseProgressionPoint[]> {
+  const rows = await getLoggedSetRows(db, 'b.exercise_id = ?', [exerciseId]);
+
+  const sessionOrder: string[] = [];
+  const rowsBySession = new Map<string, LoggedSetRow[]>();
+  for (const row of rows) {
+    const existing = rowsBySession.get(row.session_id);
+    if (existing === undefined) {
+      sessionOrder.push(row.session_id);
+      rowsBySession.set(row.session_id, [row]);
+    } else {
+      existing.push(row);
+    }
+  }
+
+  const wanted = limit > 0 ? sessionOrder.slice(0, limit) : sessionOrder;
+  const points: ExerciseProgressionPoint[] = [];
+
+  for (const sessionId of wanted) {
+    const sessionRows = rowsBySession.get(sessionId);
+    if (sessionRows === undefined) {
+      continue;
+    }
+    const sets = sessionRows.map(toPreviousSet);
+    const topSet = topSetOf(sets);
+    points.push({
+      sessionId,
+      date: sessionRows[0].session_completed_at,
+      topWeightKg: topSet === null ? 0 : topSet.weightKg,
+      topReps: topSet === null ? 0 : topSet.reps,
+      estimatedOneRepMaxKg: topSet === null ? 0 : topSet.oneRepMaxKg,
+      volumeKg: totalVolumeKg(sets),
+      setCount: sets.filter((set) => set.setType !== 'warmup').length,
+    });
+  }
+
+  // Newest-first input becomes the oldest-first series the charts read.
+  return points.reverse();
+}
+
+/**
+ * Recent logged runs, oldest first: distance, duration, pace, and RPE. `limit`
+ * keeps the most recent N runs; <= 0 returns every run.
+ */
+export async function getRunningProgressionStats(
+  db: SQLiteDatabase,
+  limit = 20,
+): Promise<RunningProgressionPoint[]> {
+  const rows = await db.getAllAsync<{
+    session_id: string;
+    completed_at: string;
+    distance_km: number;
+    duration_seconds: number;
+    avg_pace_seconds_per_km: number;
+    perceived_effort_rpe: number | null;
+  }>(
+    `SELECT r.session_id, s.completed_at, r.distance_km, r.duration_seconds,
+            r.avg_pace_seconds_per_km, r.perceived_effort_rpe
+     FROM running_metrics r
+     JOIN session_logs s ON s.id = r.session_id
+     WHERE s.completed_at IS NOT NULL
+     ORDER BY s.completed_at DESC${limit > 0 ? '\n     LIMIT ?' : ''};`,
+    ...(limit > 0 ? [limit] : []),
+  );
+
+  return rows
+    .map((row) => {
+      const point: RunningProgressionPoint = {
+        sessionId: row.session_id,
+        date: row.completed_at,
+        distanceKm: row.distance_km,
+        durationSeconds: row.duration_seconds,
+        avgPaceSecondsPerKm: row.avg_pace_seconds_per_km,
+      };
+      if (row.perceived_effort_rpe !== null) {
+        point.rpe = row.perceived_effort_rpe;
+      }
+      return point;
+    })
+    .reverse();
 }

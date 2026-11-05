@@ -3,62 +3,46 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { LoadBadge, Pill } from '../Badge';
 import { NumberInput } from './NumberInput';
 import { RpeSelector, SetTypeSelector } from './Selectors';
-import { formatRestHu } from '../../services/format';
+import {
+  formatDateHu,
+  formatOneRepMaxKg,
+  formatRestHu,
+  formatWeightKg,
+} from '../../services/format';
+import { computeNextTargetHint } from '../../services/analytics';
+import {
+  buildInitialDrafts,
+  emptyDraft,
+  exactPreviousSet,
+  findPersonalRecords,
+  prefillValues,
+} from '../../services/loggerDrafts';
+import type { SetDraft } from '../../services/loggerDrafts';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
-import type { SetType, SessionExerciseBlock } from '../../types/workout';
+import type {
+  LastPerformance,
+  PreviousPerformanceSet,
+  SessionExerciseBlock,
+  TrainingGoal,
+} from '../../types/workout';
 
-/** Local, editable draft of one set row (raw text until persisted). */
-export interface SetDraft {
-  key: string;
-  setNumber: number;
-  setType: SetType;
-  weight: string;
-  reps: string;
-  rpe: number | null;
-  /** Persisted set id once completed, else null. */
-  setLogId: string | null;
-  completed: boolean;
-}
+export type { SetDraft };
 
-function emptyDraft(blockId: string, setNumber: number, setType: SetType): SetDraft {
-  return {
-    key: `${blockId}:${setNumber}`,
-    setNumber,
-    setType,
-    weight: '',
-    reps: '',
-    rpe: null,
-    setLogId: null,
-    completed: false,
-  };
-}
+const NO_PREVIOUS_SETS: readonly PreviousPerformanceSet[] = [];
 
-/** Logged sets first (completed), then empty rows up to the target set count. */
-function buildInitialDrafts(block: SessionExerciseBlock): SetDraft[] {
-  const drafts: SetDraft[] = block.sets.map((set) => ({
-    key: `${block.id}:${set.setNumber}`,
-    setNumber: set.setNumber,
-    setType: set.setType,
-    weight: String(set.actualWeightKg),
-    reps: String(set.actualReps),
-    rpe: set.rpe ?? null,
-    setLogId: set.id,
-    completed: true,
-  }));
-
-  const target = block.targetSets ?? drafts.length;
-  const maxNumber = drafts.reduce((max, draft) => Math.max(max, draft.setNumber), 0);
-  const total = Math.max(target, maxNumber);
-  const lastType = drafts.length > 0 ? drafts[drafts.length - 1].setType : 'working';
-  for (let setNumber = maxNumber + 1; setNumber <= total; setNumber += 1) {
-    drafts.push(emptyDraft(block.id, setNumber, lastType));
-  }
-  return drafts;
+/** "80 kg × 5 @8" — one previous set, compact enough for a summary line. */
+function describePreviousSet(set: PreviousPerformanceSet): string {
+  const rpe = set.rpe === undefined ? '' : ` @${set.rpe}`;
+  return `${formatWeightKg(set.actualWeightKg)} × ${set.actualReps}${rpe}`;
 }
 
 interface ExerciseBlockCardProps {
   block: SessionExerciseBlock;
+  /** Last session's sets plus the all-time best 1RM, when the exercise has history. */
+  lastPerformance?: LastPerformance;
+  /** Drives the progressive overload ceiling; defaults to the seeded program's goal. */
+  primaryGoal?: TrainingGoal;
   /** Persists a set (create or edit); resolves with the stored set id. */
   onPersistSet: (block: SessionExerciseBlock, draft: SetDraft) => Promise<string>;
   onDeleteSet: (draft: SetDraft) => Promise<void>;
@@ -67,17 +51,27 @@ interface ExerciseBlockCardProps {
 
 /**
  * One exercise block in the logger: header (target reps, knee/axial badges,
- * substitute action) plus an editable row per set. Draft state lives here so
+ * substitute action), the "Előző edzés" memory for this exercise (last sets, a
+ * progressive overload suggestion, all-time best 1RM, and a one-tap prefill),
+ * and an editable row per set with an "Új PR!" badge. Draft state lives here so
  * typing stays responsive; every completion writes straight through to SQLite.
  */
 export function ExerciseBlockCard({
   block,
+  lastPerformance,
+  primaryGoal = 'powerbuilding',
   onPersistSet,
   onDeleteSet,
   onSubstitute,
 }: ExerciseBlockCardProps) {
-  const [drafts, setDrafts] = useState<SetDraft[]>(() => buildInitialDrafts(block));
+  const previousSets = lastPerformance?.sets ?? NO_PREVIOUS_SETS;
+  const [drafts, setDrafts] = useState<SetDraft[]>(() =>
+    buildInitialDrafts(block, previousSets),
+  );
   const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const hint = computeNextTargetHint(previousSets, primaryGoal, block.targetReps);
+  const personalRecords = findPersonalRecords(drafts, lastPerformance?.bestOneRepMaxKg ?? 0);
 
   const patchDraft = (key: string, patch: Partial<SetDraft>): void => {
     setDrafts((previous) =>
@@ -121,8 +115,26 @@ export function ExerciseBlockCard({
     setDrafts((previous) => {
       const maxNumber = previous.reduce((max, draft) => Math.max(max, draft.setNumber), 0);
       const lastType = previous.length > 0 ? previous[previous.length - 1].setType : 'working';
-      return [...previous, emptyDraft(block.id, maxNumber + 1, lastType)];
+      const draft = emptyDraft(block.id, maxNumber + 1, lastType);
+      const prefill = prefillValues(maxNumber + 1, previousSets);
+      return [...previous, prefill === null ? draft : { ...draft, ...prefill }];
     });
+  };
+
+  /** Re-applies last session's weight/reps to every row that is not logged yet. */
+  const loadPreviousSession = (): void => {
+    if (previousSets.length === 0) {
+      return;
+    }
+    setDrafts((previous) =>
+      previous.map((draft) => {
+        if (draft.completed) {
+          return draft;
+        }
+        const prefill = prefillValues(draft.setNumber, previousSets);
+        return prefill === null ? draft : { ...draft, weight: prefill.weight, reps: prefill.reps };
+      }),
+    );
   };
 
   const target = `${block.targetSets ?? 1} × ${block.targetReps ?? '—'}`;
@@ -145,6 +157,43 @@ export function ExerciseBlockCard({
           ) : null}
         </View>
         {block.notes !== undefined ? <Text style={styles.note}>{block.notes}</Text> : null}
+
+        <View style={styles.previousBox}>
+          {lastPerformance === undefined ? (
+            <Text style={styles.previousEmpty}>{hu.logger.previousNoHistory}</Text>
+          ) : (
+            <>
+              <Text style={styles.previousTitle}>
+                {hu.logger.previousSession} · {formatDateHu(lastPerformance.completedAt)}
+              </Text>
+              <Text style={styles.previousSets}>
+                {lastPerformance.sets.map(describePreviousSet).join('  ·  ')}
+              </Text>
+              <Text style={styles.previousBest}>
+                {hu.logger.bestOneRepMax}: {formatOneRepMaxKg(lastPerformance.bestOneRepMaxKg)}
+              </Text>
+              {hint !== null ? (
+                <View style={styles.hintRow}>
+                  <Pill
+                    label={`${hu.logger.hint}: ${formatWeightKg(hint.weightKg)} × ${hint.reps}`}
+                    tone="accent"
+                  />
+                </View>
+              ) : null}
+              {hint !== null ? (
+                <Text style={styles.hintReason}>{hu.logger.hintReasons[hint.reason]}</Text>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                onPress={loadPreviousSession}
+                style={({ pressed }) => [styles.prefillButton, pressed ? styles.pressed : null]}
+              >
+                <Text style={styles.prefillLabel}>{hu.logger.previousPrefill}</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+
         <Pressable
           accessibilityRole="button"
           onPress={() => onSubstitute(block)}
@@ -155,60 +204,81 @@ export function ExerciseBlockCard({
       </View>
 
       <View style={styles.setList}>
-        {drafts.map((draft) => (
-          <View key={draft.key} style={[styles.setRow, draft.completed ? styles.setRowDone : null]}>
-            <View style={styles.setHead}>
-              <Text style={styles.setTitle}>
-                {draft.setNumber}. {hu.logger.set}
-              </Text>
-              <Pressable
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: draft.completed, busy: busyKey === draft.key }}
-                onPress={() => {
-                  void handleToggle(draft);
-                }}
-                style={({ pressed }) => [
-                  styles.checkbox,
-                  draft.completed ? styles.checkboxOn : null,
-                  pressed ? styles.pressed : null,
-                ]}
-              >
-                <Text style={styles.checkboxMark}>{draft.completed ? '✓' : ''}</Text>
-              </Pressable>
-            </View>
+        {drafts.map((draft) => {
+          const previous = exactPreviousSet(draft.setNumber, previousSets);
+          const prOneRepMaxKg = personalRecords[draft.key];
+          return (
+            <View key={draft.key} style={[styles.setRow, draft.completed ? styles.setRowDone : null]}>
+              <View style={styles.setHead}>
+                <Text style={styles.setTitle}>
+                  {draft.setNumber}. {hu.logger.set}
+                </Text>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: draft.completed, busy: busyKey === draft.key }}
+                  onPress={() => {
+                    void handleToggle(draft);
+                  }}
+                  style={({ pressed }) => [
+                    styles.checkbox,
+                    draft.completed ? styles.checkboxOn : null,
+                    pressed ? styles.pressed : null,
+                  ]}
+                >
+                  <Text style={styles.checkboxMark}>{draft.completed ? '✓' : ''}</Text>
+                </Pressable>
+              </View>
 
-            <SetTypeSelector
-              value={draft.setType}
-              onChange={(setType) => applyAndPersist(draft, { setType })}
-            />
+              {previous !== null ? (
+                <Text style={styles.previousBadge}>
+                  {hu.logger.previous}: {describePreviousSet(previous)}
+                </Text>
+              ) : null}
 
-            <View style={styles.inputRow}>
-              <NumberInput
-                label={hu.logger.weight}
-                value={draft.weight}
-                unit={hu.common.kg}
-                placeholder="0"
-                allowDecimal
-                onChangeText={(weight) => patchDraft(draft.key, { weight })}
-                onCommit={() => {
-                  void persistCompleted(draft);
-                }}
+              {prOneRepMaxKg !== undefined ? (
+                <View style={styles.prRow}>
+                  <Pill
+                    label={`${hu.logger.newPr} (${hu.logger.estimatedOneRepMax}: ${formatOneRepMaxKg(
+                      prOneRepMaxKg,
+                    )})`}
+                    tone="success"
+                  />
+                </View>
+              ) : null}
+
+              <SetTypeSelector
+                value={draft.setType}
+                onChange={(setType) => applyAndPersist(draft, { setType })}
               />
-              <NumberInput
-                label={hu.logger.reps}
-                value={draft.reps}
-                unit={hu.logger.repsShort}
-                placeholder="0"
-                onChangeText={(reps) => patchDraft(draft.key, { reps })}
-                onCommit={() => {
-                  void persistCompleted(draft);
-                }}
-              />
-            </View>
 
-            <RpeSelector value={draft.rpe} onChange={(rpe) => applyAndPersist(draft, { rpe })} />
-          </View>
-        ))}
+              <View style={styles.inputRow}>
+                <NumberInput
+                  label={hu.logger.weight}
+                  value={draft.weight}
+                  unit={hu.common.kg}
+                  placeholder="0"
+                  allowDecimal
+                  onChangeText={(weight) => patchDraft(draft.key, { weight })}
+                  onCommit={() => {
+                    void persistCompleted(draft);
+                  }}
+                />
+                <NumberInput
+                  label={hu.logger.reps}
+                  value={draft.reps}
+                  unit={hu.logger.repsShort}
+                  placeholder="0"
+                  onChangeText={(reps) => patchDraft(draft.key, { reps })}
+                  onCommit={() => {
+                    void persistCompleted(draft);
+                  }}
+                />
+              </View>
+
+              <RpeSelector value={draft.rpe} onChange={(rpe) => applyAndPersist(draft, { rpe })} />
+            </View>
+          );
+        })}
       </View>
 
       <Pressable
@@ -262,6 +332,59 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.xs,
     fontStyle: 'italic',
   },
+  previousBox: {
+    backgroundColor: colors.surfaceElevated,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
+  previousTitle: {
+    color: colors.textSecondary,
+    fontSize: typography.sizes.xs,
+    fontWeight: typography.weights.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  previousSets: {
+    color: colors.textPrimary,
+    fontSize: typography.sizes.sm,
+    fontVariant: ['tabular-nums'],
+  },
+  previousBest: {
+    color: colors.textMuted,
+    fontSize: typography.sizes.xs,
+    fontVariant: ['tabular-nums'],
+  },
+  previousEmpty: {
+    color: colors.textMuted,
+    fontSize: typography.sizes.xs,
+  },
+  hintRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  hintReason: {
+    color: colors.textSecondary,
+    fontSize: typography.sizes.xs,
+  },
+  prefillButton: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceInput,
+  },
+  prefillLabel: {
+    color: colors.textSecondary,
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.medium,
+  },
   substituteButton: {
     alignSelf: 'flex-start',
     paddingHorizontal: spacing.md,
@@ -301,6 +424,15 @@ const styles = StyleSheet.create({
     fontWeight: typography.weights.semibold,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  previousBadge: {
+    color: colors.textMuted,
+    fontSize: typography.sizes.xs,
+    fontVariant: ['tabular-nums'],
+  },
+  prRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
   },
   checkbox: {
     width: 32,

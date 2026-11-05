@@ -7,6 +7,8 @@ import type {
   EquipmentTier,
   JointArea,
   JointConstraintSeverity,
+  OverloadHintReason,
+  RunningTrend,
   SetType,
   TrainingGoal,
 } from '../types/workout';
@@ -171,6 +173,40 @@ export const hu = {
       volume: 'Összvolumen',
       pace: 'Tempó',
       noSets: 'Nincs naplózott sorozat.',
+      tabs: {
+        log: 'Napló',
+        progress: 'Fejlődés & PR-ek',
+      },
+      progress: {
+        subtitle: 'Gyakorlatonkénti fejlődés, becsült 1RM és PR-ek.',
+        exercisesTitle: 'Gyakorlatok',
+        allExercises: 'Összes gyakorlat',
+        pickExercise: 'Gyakorlat választása',
+        noSelection: 'Válassz gyakorlatot a fejlődés megtekintéséhez.',
+        noData: 'Ehhez a gyakorlathoz még nincs naplózott sorozat.',
+        allTimeBest: 'Legjobb sorozat',
+        bestOneRepMax: 'Legjobb becsült 1RM',
+        recentSessions: 'Utolsó edzések',
+        topSet: 'Csúcssorozat',
+        volume: 'Volumen',
+        oneRepMaxShort: '1RM',
+        setsShort: 'sorozat',
+        sessionsShort: 'edzés',
+        runningTitle: 'Futás összesítő',
+        runsLogged: 'rögzített futás',
+        totalDistance: 'Összes táv',
+        averagePace: 'Átlagtempó',
+        best5k: 'Legjobb 5K tempó',
+        best7k: 'Legjobb 7K tempó',
+        trend: 'Trend',
+        noRuns: 'Még nincs naplózott futás.',
+        trends: {
+          improving: 'Javuló',
+          steady: 'Stabil',
+          declining: 'Visszaeső',
+          none: 'Nincs elég adat',
+        },
+      },
     },
     profile: {
       title: 'Profil',
@@ -247,6 +283,20 @@ export const hu = {
     discardConfirm: 'Biztosan elveted az edzést?',
     discardConfirmBody: 'A naplózott sorozatok véglegesen törlődnek.',
     replacedFrom: 'Helyettesítve',
+    previous: 'Előző',
+    previousSession: 'Előző edzés',
+    previousNoHistory: 'Ehhez a gyakorlathoz még nincs korábbi edzés.',
+    previousPrefill: 'Előző edzés betöltése',
+    hint: 'Javaslat',
+    newPr: 'Új PR!',
+    estimatedOneRepMax: 'Becsült 1RM',
+    bestOneRepMax: 'Legjobb becsült 1RM',
+    hintReasons: {
+      top_of_range_easy: 'A tartomány tetején, könnyedén — jöhet a +2,5 kg.',
+      top_of_range_hard: 'A tartomány tetején, de megterhelő volt — ismételd meg.',
+      add_rep: 'Ugyanaz a súly, egy ismétléssel több.',
+      hold_weight: 'Bukáshoz közeli sorozat volt — előbb ismételd meg a súlyt.',
+    },
     running: {
       title: 'Futás napló',
       distance: 'Táv (km)',
@@ -363,6 +413,8 @@ const _jointAreas: Record<JointArea, string> = hu.onboarding.constraints.areas;
 const _severities: Record<JointConstraintSeverity, string> = hu.onboarding.constraints.severity;
 const _goals: Record<TrainingGoal, string> = hu.onboarding.goals;
 const _equipment: Record<EquipmentTier, string> = hu.onboarding.equipment;
+const _hintReasons: Record<OverloadHintReason, string> = hu.logger.hintReasons;
+const _runningTrends: Record<RunningTrend, string> = hu.screens.history.progress.trends;
 
 export type HuDictionary = typeof hu;
 

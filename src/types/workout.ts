@@ -266,3 +266,104 @@ export interface SyncBatchPayload {
   deviceId: string;
   sessions: WorkoutSessionLog[];
 }
+
+// --- Phase 5: progressive overload memory, 1RM analytics, PR detection ------
+
+/** One completed set from an earlier session — the "Előző edzés" hint row. */
+export interface PreviousPerformanceSet {
+  setNumber: number;
+  setType: SetType;
+  actualWeightKg: number;
+  actualReps: number;
+  rpe?: number;
+  completedAt: string; // ISO-8601
+}
+
+/** Best estimated 1RM for one set, with the set that produced it. */
+export interface EstimatedOneRepMax {
+  weightKg: number;
+  reps: number;
+  oneRepMaxKg: number;
+  rpe?: number;
+}
+
+/** What the logger shows for an exercise: last session's sets + all-time best. */
+export interface LastPerformance {
+  exerciseId: string;
+  /** Most recent completed session that logged this exercise. */
+  sessionId: string;
+  sessionTitle: string;
+  completedAt: string; // ISO-8601
+  /** That session's logged sets, in set order. */
+  sets: PreviousPerformanceSet[];
+  /** Heaviest non-warmup set of that session. */
+  topSet?: EstimatedOneRepMax;
+  /** All-time best estimated 1RM across every completed session. */
+  bestOneRepMaxKg: number;
+  /** The set behind `bestOneRepMaxKg` (absent when the exercise has no history). */
+  bestSet?: EstimatedOneRepMax & { sessionId: string; completedAt: string };
+}
+
+/** One session of an exercise's progression, for the chart/table view. */
+export interface ExerciseProgressionPoint {
+  sessionId: string;
+  /** ISO-8601 completion timestamp — the x axis. */
+  date: string;
+  topWeightKg: number;
+  topReps: number;
+  estimatedOneRepMaxKg: number;
+  /** Working-set tonnage (warmups excluded). */
+  volumeKg: number;
+  setCount: number;
+}
+
+/** One logged run, for the running summary card. */
+export interface RunningProgressionPoint {
+  sessionId: string;
+  date: string; // ISO-8601
+  distanceKm: number;
+  durationSeconds: number;
+  avgPaceSecondsPerKm: number;
+  rpe?: number;
+}
+
+/** Why `computeNextTargetHint` suggested what it suggested (i18n key). */
+export type OverloadHintReason =
+  | 'top_of_range_easy'
+  | 'top_of_range_hard'
+  | 'add_rep'
+  | 'hold_weight';
+
+/** Suggested next-session target for one exercise. */
+export interface OverloadTargetHint {
+  reason: OverloadHintReason;
+  weightKg: number;
+  reps: number;
+  /** Change versus the reference set (0 when unchanged). */
+  deltaKg: number;
+  deltaReps: number;
+}
+
+/** A run of one nominal distance, e.g. the best logged 5K. */
+export interface BestEffortPace {
+  /** Nominal bucket the run was matched against (5 or 7 km). */
+  targetDistanceKm: number;
+  distanceKm: number;
+  paceSecondsPerKm: number;
+  sessionId: string;
+  date: string; // ISO-8601
+}
+
+export type RunningTrend = 'improving' | 'steady' | 'declining' | 'none';
+
+/** Headline numbers for the Előzmények running card. */
+export interface RunningProgressionSummary {
+  sessionCount: number;
+  totalDistanceKm: number;
+  /** Mean pace over every logged run; 0 when nothing is logged. */
+  averagePaceSecondsPerKm: number;
+  best5k?: BestEffortPace;
+  best7k?: BestEffortPace;
+  trend: RunningTrend;
+}
+
