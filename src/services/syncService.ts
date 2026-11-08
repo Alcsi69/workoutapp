@@ -1,12 +1,15 @@
 // Phase 4/7B — offline-first sync service.
 //
-// `syncPendingWorkouts` is the one-tap Szinkronizálás entry point. In Phase 7B it
-// performs a full Push-then-Pull against the coach backend:
+// The sync is split into two independent legs so the app can drive them
+// automatically (see services/autoSync.ts) as well as on demand:
 //
-//   1. Push  — POST /api/sync/push with the client's whole changed state
+//   1. Push  — POST {base}/sync/push with the client's whole changed state
 //              (onboarding profile, billing record, dirty sessions + bookings).
-//   2. Pull  — GET /api/sync/pull?userId=... and reconcile the local graph with
+//   2. Pull  — GET {base}/sync/pull?userId=... and reconcile the local graph with
 //              the coach's assignments, booking decisions and open slots.
+//
+// `syncPendingWorkouts` runs Push-then-Pull (the manual Szinkronizálás button);
+// `syncPush` / `syncPull` run a single leg (the background auto-sync).
 //
 // When no backend URL is configured (or the network call fails) it degrades to a
 // local export / dry run: the push payload is returned for on-device inspection
@@ -41,13 +44,42 @@ export interface SyncResult {
   syncedSessionIds: string[];
   /** Bookings flipped to `synced` — non-empty only on a successful upload. */
   syncedBookingIds: string[];
-  /** The exact JSON body that was (or would be) POSTed to /api/sync/push. */
+  /** The exact JSON body that was (or would be) POSTed to /sync/push. */
   payload: ClientSyncPushPayload;
   /** Coach plans applied from the pull leg (0 when none / dry run). */
   appliedTemplateCount: number;
   /** Booking statuses refreshed from the pull leg. */
   appliedBookingCount: number;
   /** Set when the upload could not proceed (offline, HTTP error, fetch missing). */
+  error?: string;
+}
+
+/** Outcome of a push-only sync leg. */
+export interface SyncPushResult {
+  mode: SyncMode;
+  /** Sessions in the outgoing batch. */
+  sessionCount: number;
+  /** Coaching bookings in the outgoing batch. */
+  bookingCount: number;
+  /** Sessions flipped to `synced` — non-empty only on a successful upload. */
+  syncedSessionIds: string[];
+  /** Bookings flipped to `synced` — non-empty only on a successful upload. */
+  syncedBookingIds: string[];
+  /** The exact JSON body that was (or would be) POSTed. */
+  payload: ClientSyncPushPayload;
+  /** Set when the upload could not proceed (offline, HTTP error, fetch missing). */
+  error?: string;
+}
+
+/** Outcome of a pull-only sync leg. */
+export interface SyncPullResult {
+  /** True only when the pull request succeeded and was applied locally. */
+  ok: boolean;
+  /** Coach plans applied. */
+  appliedTemplateCount: number;
+  /** Booking statuses refreshed. */
+  appliedBookingCount: number;
+  /** Set when the pull could not proceed (offline, HTTP error, fetch missing). */
   error?: string;
 }
 
@@ -146,20 +178,20 @@ export async function buildClientSyncPushPayload(
 }
 
 /**
- * Performs a full Push-then-Pull against the coach backend.
+ * Uploads the client's whole changed state (Push leg only).
  *
- * - `noop`     — nothing dirty and no backend configured.
+ * - `noop`     — nothing to upload and no backend configured.
  * - `dry_run`  — no backend configured, fetch unavailable, or the push failed;
  *                the payload is returned locally and rows stay dirty.
- * - `remote`   — the push succeeded (rows marked synced) and the pull leg ran.
+ * - `remote`   — the push succeeded and rows are marked synced.
  *
- * @param baseUrl backend base URL (e.g. `http://10.0.2.2:4000`); when omitted/empty
- *                the call stays local.
+ * @param baseUrl backend API base URL (e.g. `https://api.alexercise.app/api`);
+ *                when omitted/empty the call stays local.
  */
-export async function syncPendingWorkouts(
+export async function syncPush(
   db: SQLiteDatabase,
   baseUrl?: string | null,
-): Promise<SyncResult> {
+): Promise<SyncPushResult> {
   const url = normalizeBaseUrl(baseUrl);
   const payload = await buildClientSyncPushPayload(db);
   const base = {
@@ -168,8 +200,6 @@ export async function syncPendingWorkouts(
     syncedSessionIds: [] as string[],
     syncedBookingIds: [] as string[],
     payload,
-    appliedTemplateCount: 0,
-    appliedBookingCount: 0,
   };
 
   if (url.length === 0) {
@@ -186,8 +216,7 @@ export async function syncPendingWorkouts(
   }
 
   try {
-    // --- Push -------------------------------------------------------------
-    const pushResponse = await doFetch(`${url}/api/sync/push`, {
+    const pushResponse = await doFetch(`${url}/sync/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -210,27 +239,6 @@ export async function syncPendingWorkouts(
       await markCoachingBookingsSynced(db, syncedBookingIds);
     }
 
-    // --- Pull -------------------------------------------------------------
-    // Best-effort: a failed pull never un-does a successful push.
-    let appliedTemplateCount = 0;
-    let appliedBookingCount = 0;
-    try {
-      const pullResponse = await doFetch(
-        `${url}/api/sync/pull?userId=${encodeURIComponent(USER_PROFILE_ID)}`,
-        { method: 'GET', headers: { Accept: 'application/json' } },
-      );
-      if (pullResponse.ok) {
-        const pull = await readJson<CoachSyncPullResponse>(pullResponse);
-        if (pull !== null) {
-          await applyClientSyncPullPayload(db, pull);
-          appliedTemplateCount = pull.templates.length;
-          appliedBookingCount = pull.bookings.length;
-        }
-      }
-    } catch {
-      // Ignore: the push succeeded and the client stays usable offline.
-    }
-
     return {
       mode: 'remote',
       sessionCount: syncedSessionIds.length,
@@ -238,8 +246,6 @@ export async function syncPendingWorkouts(
       syncedSessionIds,
       syncedBookingIds,
       payload,
-      appliedTemplateCount,
-      appliedBookingCount,
     };
   } catch (cause: unknown) {
     return {
@@ -248,4 +254,93 @@ export async function syncPendingWorkouts(
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
+}
+
+/**
+ * Downloads and applies the coach's changes (Pull leg only). Best-effort: a
+ * failure leaves the local graph untouched and reports `ok: false` so the caller
+ * can stay silent (the client remains fully usable offline).
+ *
+ * @param baseUrl backend API base URL; when omitted/empty the call is skipped.
+ */
+export async function syncPull(
+  db: SQLiteDatabase,
+  baseUrl?: string | null,
+): Promise<SyncPullResult> {
+  const url = normalizeBaseUrl(baseUrl);
+  const skipped = { ok: false, appliedTemplateCount: 0, appliedBookingCount: 0 };
+  if (url.length === 0) {
+    return skipped;
+  }
+
+  const doFetch = getFetch();
+  if (doFetch === null) {
+    return { ...skipped, error: 'A hálózati kliens nem elérhető.' };
+  }
+
+  try {
+    const pullResponse = await doFetch(
+      `${url}/sync/pull?userId=${encodeURIComponent(USER_PROFILE_ID)}`,
+      { method: 'GET', headers: { Accept: 'application/json' } },
+    );
+    if (!pullResponse.ok) {
+      return { ...skipped, error: `A szerver hibát adott vissza (HTTP ${pullResponse.status}).` };
+    }
+    const pull = await readJson<CoachSyncPullResponse>(pullResponse);
+    if (pull === null) {
+      return skipped;
+    }
+    await applyClientSyncPullPayload(db, pull);
+    return {
+      ok: true,
+      appliedTemplateCount: pull.templates.length,
+      appliedBookingCount: pull.bookings.length,
+    };
+  } catch (cause: unknown) {
+    return {
+      ...skipped,
+      error: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+}
+
+/**
+ * Performs a full Push-then-Pull against the coach backend (the manual
+ * Szinkronizálás entry point). A failed pull never un-does a successful push.
+ *
+ * @param baseUrl backend API base URL; when omitted/empty the call stays local.
+ */
+export async function syncPendingWorkouts(
+  db: SQLiteDatabase,
+  baseUrl?: string | null,
+): Promise<SyncResult> {
+  const push = await syncPush(db, baseUrl);
+
+  const shared = {
+    sessionCount: push.sessionCount,
+    bookingCount: push.bookingCount,
+    syncedSessionIds: push.syncedSessionIds,
+    syncedBookingIds: push.syncedBookingIds,
+    payload: push.payload,
+  };
+
+  if (push.mode !== 'remote') {
+    return {
+      mode: push.mode,
+      ...shared,
+      appliedTemplateCount: 0,
+      appliedBookingCount: 0,
+      ...(push.error !== undefined ? { error: push.error } : {}),
+    };
+  }
+
+  // Best-effort pull: its failure is swallowed so a successful push stands.
+  const pull = await syncPull(db, baseUrl);
+
+  return {
+    mode: 'remote',
+    ...shared,
+    appliedTemplateCount: pull.appliedTemplateCount,
+    appliedBookingCount: pull.appliedBookingCount,
+  };
 }

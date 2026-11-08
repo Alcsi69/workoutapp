@@ -47,6 +47,9 @@ import type {
 } from '../types/workout';
 // Value import: the default billing country constant (types above are type-only).
 import { DEFAULT_BILLING_COUNTRY } from '../types/workout';
+// Emitted after every local mutation so the mounted <AutoSync /> schedules a
+// debounced background push. Import-free module → no cycle with syncService.
+import { requestSyncPush } from '../services/syncEvents';
 import type {
   ClientBillingProfileRow,
   CoachingBookingRow,
@@ -238,6 +241,7 @@ export async function saveOnboardingPayload(
       );
     }
   });
+  requestSyncPush();
 }
 
 export async function getJointConstraints(
@@ -1089,6 +1093,7 @@ export async function saveClientBillingProfile(
   if (saved === null) {
     throw new Error('A számlázási adatok mentése sikertelen.');
   }
+  requestSyncPush();
   return saved;
 }
 
@@ -1337,6 +1342,7 @@ export async function createCoachingBooking(
   if (booking === null) {
     throw new Error('A foglalás létrehozása sikertelen.');
   }
+  requestSyncPush();
   return toCoachingBooking(booking);
 }
 
@@ -1366,6 +1372,7 @@ export async function cancelCoachingBooking(
     );
     await db.runAsync('UPDATE coaching_slots SET is_booked = 0 WHERE id = ?;', row.slot_id);
   });
+  requestSyncPush();
   return true;
 }
 
@@ -1548,6 +1555,7 @@ export async function startSessionFromTemplate(
     }
   });
 
+  requestSyncPush();
   return sessionId;
 }
 
@@ -1575,6 +1583,7 @@ async function markSessionDirty(db: SQLiteDatabase, sessionId: string): Promise<
     `UPDATE session_logs SET sync_status = 'local_dirty' WHERE id = ?;`,
     sessionId,
   );
+  requestSyncPush();
 }
 
 const SELECT_SESSION_DETAIL_SQL = `
@@ -1849,6 +1858,7 @@ export async function deleteSetLog(db: SQLiteDatabase, setLogId: string): Promis
       );
     }
   });
+  requestSyncPush();
 }
 
 /**
@@ -1994,6 +2004,7 @@ export async function completeSession(db: SQLiteDatabase, sessionId: string): Pr
     completedAt,
     sessionId,
   );
+  requestSyncPush();
   return completedAt;
 }
 
@@ -2007,6 +2018,9 @@ export async function discardSession(db: SQLiteDatabase, sessionId: string): Pro
     'DELETE FROM session_logs WHERE id = ? AND completed_at IS NULL;',
     sessionId,
   );
+  if (result.changes > 0) {
+    requestSyncPush();
+  }
   return result.changes > 0;
 }
 
@@ -2074,8 +2088,11 @@ export async function markSessionsSynced(
 // Device-local configuration that is not part of the domain model. Currently the
 // coach backend base URL the sync service talks to; the Profil sync card edits it.
 
-/** Default backend base URL: the Android emulator's host loopback. */
-export const DEFAULT_SYNC_SERVER_URL = 'http://10.0.2.2:4000';
+/**
+ * Default backend API base URL: the live production coach backend. Paths are
+ * joined relative to this root (e.g. `${DEFAULT_SYNC_SERVER_URL}/sync/push`).
+ */
+export const DEFAULT_SYNC_SERVER_URL = 'https://api.alexercise.app/api';
 
 const SYNC_SERVER_URL_KEY = 'sync.serverUrl';
 

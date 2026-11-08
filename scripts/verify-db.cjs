@@ -45,6 +45,8 @@ const {
 } = require('../.verify-build/services/routineGenerator.js');
 const {
   syncPendingWorkouts,
+  syncPush,
+  syncPull,
   buildSyncBatchPayload,
   buildClientSyncPushPayload,
 } = require('../.verify-build/services/syncService.js');
@@ -1142,7 +1144,7 @@ async function main() {
     };
     globalThis.fetch = async (url, init) => {
       calls.push({ url, init });
-      if (url.includes('/api/sync/pull')) {
+      if (url.includes('/sync/pull')) {
         return { ok: true, status: 200, json: async () => pullBody };
       }
       return { ok: true, status: 200, json: async () => ({ ok: true }) };
@@ -1153,15 +1155,58 @@ async function main() {
       assert.equal(result.sessionCount, dirtyPayload.length);
       assert.equal(result.syncedSessionIds.length, dirtyPayload.length);
       assert.equal(calls.length, 2);
-      assert.ok(calls[0].url.endsWith('/api/sync/push'), 'first leg is the push');
+      assert.ok(calls[0].url.endsWith('/sync/push'), 'first leg is the push');
       assert.ok(
-        calls[1].url.includes('/api/sync/pull?userId=usr_local'),
+        calls[1].url.includes('/sync/pull?userId=usr_local'),
         'second leg is the pull',
       );
       const sent = JSON.parse(calls[0].init.body);
       assert.equal(sent.sessions.length, dirtyPayload.length);
       assert.equal(sent.profile.userId, repository.USER_PROFILE_ID);
       assert.equal(await repository.countDirtySessions(db), 0);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  await check('syncPull without an endpoint skips the network (ok:false)', async () => {
+    const result = await syncPull(db);
+    assert.equal(result.ok, false);
+    assert.equal(result.appliedTemplateCount, 0);
+    assert.equal(result.appliedBookingCount, 0);
+  });
+
+  await check('syncPush without an endpoint is a noop when nothing is dirty', async () => {
+    const result = await syncPush(db);
+    assert.equal(result.mode, 'noop');
+    assert.equal(result.sessionCount, 0);
+    assert.equal(result.syncedSessionIds.length, 0);
+  });
+
+  await check('syncPull hits the base-relative /sync/pull path and applies the coach payload', async () => {
+    const calls = [];
+    const previousFetch = globalThis.fetch;
+    const pullBody = {
+      syncId: 'sync_pull_leg',
+      generatedAt: new Date().toISOString(),
+      userId: repository.USER_PROFILE_ID,
+      templates: [],
+      bookings: [],
+      slots: [],
+    };
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, json: async () => pullBody };
+    };
+    try {
+      const result = await syncPull(db, 'https://api.example.test/api');
+      assert.equal(result.ok, true);
+      assert.equal(calls.length, 1, 'a pull runs a single GET');
+      assert.equal(
+        calls[0].url,
+        'https://api.example.test/api/sync/pull?userId=usr_local',
+        'the pull path is joined under the configured API base',
+      );
     } finally {
       globalThis.fetch = previousFetch;
     }

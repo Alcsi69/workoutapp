@@ -450,8 +450,8 @@ const hu = {
     empty: 'Nincs mit megjeleníteni.',
     serverUrlLabel: 'Szerver URL',
     serverUrlHint:
-      'A coach backend címe. Android emulátoron: http://10.0.2.2:4000, vagy a géped LAN IP-címe.',
-    serverUrlPlaceholder: 'http://10.0.2.2:4000',
+      'A coach backend címe. Éles: https://api.alexercise.app/api — helyi fejlesztéshez Android emulátoron http://10.0.2.2:4000.',
+    serverUrlPlaceholder: 'https://api.alexercise.app/api',
     serverUrlSaved: 'Szerver URL mentve.',
     serverUrlReset: 'Alapértelmezett visszaállítva.',
     serverUrlDefault: 'Alapértelmezett',

@@ -218,8 +218,16 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
 
   upsertJointConstraint: (area, severity) => {
     set((state) => {
-      const others = state.jointLimitations.filter((item) => item.area !== area);
-      return { jointLimitations: [...others, { area, severity }] };
+      const index = state.jointLimitations.findIndex((item) => item.area === area);
+      if (index === -1) {
+        // New selection: append, so the list keeps the order areas were picked.
+        return { jointLimitations: [...state.jointLimitations, { area, severity }] };
+      }
+      // Existing selection: replace IN PLACE. Appending here would reorder the
+      // list every time a severity chip is tapped.
+      const next = [...state.jointLimitations];
+      next[index] = { area, severity };
+      return { jointLimitations: next };
     });
   },
   removeJointConstraint: (area) => {

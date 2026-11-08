@@ -95,6 +95,111 @@ const CATEGORY_LABELS = {
   machine: 'Gép',
   cardio_run: 'Kardió / futás',
 };
+const SESSION_TYPE_LABELS = { strength: 'Erő', running: 'Futás', hybrid: 'Hibrid' };
+const SET_TYPE_LABELS = {
+  warmup: 'Bemelegítő',
+  working: 'Munkasorozat',
+  top_set: 'Csúcssorozat',
+  backoff: 'Backoff',
+  drop_set: 'Drop set',
+  failure: 'Kudarcig',
+};
+
+function sessionTypeLabel(type) {
+  return SESSION_TYPE_LABELS[type] || type || '—';
+}
+
+/** mm:ss from a whole number of seconds (pace / duration display). */
+function fmtSeconds(total) {
+  if (total === null || total === undefined || total === '') return '—';
+  const seconds = Math.round(Number(total));
+  if (!Number.isFinite(seconds)) return '—';
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Renders one logged session's actual performance: every exercise block with
+ * its per-set weight, reps, set type and RPE, plus running metrics when present.
+ * The session objects come from the detail endpoint already fully hydrated.
+ */
+function renderSessionBlocks(session) {
+  const parts = [];
+  const blocks = Array.isArray(session.exerciseBlocks)
+    ? session.exerciseBlocks.slice().sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0))
+    : [];
+
+  if (blocks.length === 0) {
+    parts.push('<div class="muted">Ehhez az edzéshez nincs naplózott gyakorlat.</div>');
+  }
+
+  for (const block of blocks) {
+    const exercise = block.exercise || {};
+    const name = exercise.nameHu || block.exerciseId || '—';
+    const swapped =
+      block.substitutedFromExerciseId && block.substitutedFromExerciseId !== block.exerciseId
+        ? `<span class="pill warning">csere: ${esc(block.substitutedFromExerciseId)}</span>`
+        : '';
+    const rest =
+      block.restSeconds && block.restSeconds > 0
+        ? `<span class="muted">${block.restSeconds} mp pihenő</span>`
+        : '';
+    const sets = Array.isArray(block.sets)
+      ? block.sets.slice().sort((a, b) => (a.setNumber || 0) - (b.setNumber || 0))
+      : [];
+    const rows = sets
+      .map((set) => {
+        const weight =
+          set.actualWeightKg === undefined || set.actualWeightKg === null
+            ? '—'
+            : `${set.actualWeightKg} kg`;
+        const reps = set.actualReps === undefined || set.actualReps === null ? '—' : set.actualReps;
+        const target = set.targetReps ? ` <span class="muted">/ ${esc(set.targetReps)}</span>` : '';
+        const rpe = set.rpe === undefined || set.rpe === null ? '—' : set.rpe;
+        return `<tr>
+            <td>${esc(set.setNumber)}</td>
+            <td>${esc(SET_TYPE_LABELS[set.setType] || set.setType || '—')}</td>
+            <td>${esc(weight)}</td>
+            <td>${esc(reps)}${target}</td>
+            <td>${esc(rpe)}</td>
+          </tr>`;
+      })
+      .join('');
+
+    parts.push(`
+      <div class="session-block">
+        <div class="row">
+          <strong>${esc(name)}</strong>
+          <span class="muted">${sets.length} sorozat</span>
+        </div>
+        ${swapped || rest ? `<div class="row">${swapped}${rest}</div>` : ''}
+        ${
+          sets.length === 0
+            ? '<div class="muted">Nincs naplózott sorozat.</div>'
+            : `<table class="sets"><thead><tr>
+                 <th>Sorozat</th><th>Típus</th><th>Súly</th><th>Ismétlés</th><th>RPE</th>
+               </tr></thead><tbody>${rows}</tbody></table>`
+        }
+      </div>`);
+  }
+
+  const metrics = session.runningMetrics;
+  if (metrics) {
+    parts.push(`
+      <div class="session-block">
+        <div class="row"><strong>Futás metrikák</strong></div>
+        <div class="row muted">
+          <span>${esc(metrics.distanceKm)} km</span>
+          <span>${esc(fmtSeconds(metrics.durationSeconds))}</span>
+          <span>${esc(fmtSeconds(metrics.avgPaceSecondsPerKm))} /km</span>
+          <span>RPE ${metrics.perceivedEffortRpe === undefined ? '—' : esc(metrics.perceivedEffortRpe)}</span>
+        </div>
+      </div>`);
+  }
+
+  return parts.join('');
+}
+
 
 function severityTone(severity) {
   if (severity === 'strict_exclude') return 'danger';
@@ -243,13 +348,22 @@ async function openClient(userId) {
         ? '<div class="empty">Nincs naplózott edzés.</div>'
         : detail.sessions
             .map(
-              (s) => `
+              (s, index) => `
         <div class="item">
           <div class="row">
             <h3>${esc(s.title)}</h3>
-            <span class="muted">${s.sessionType === 'running' ? 'Futás' : s.sessionType === 'hybrid' ? 'Hibrid' : 'Erő'}</span>
+            <span class="muted">${esc(sessionTypeLabel(s.sessionType))}</span>
           </div>
-          <div class="row muted">${esc(fmtDateTime(s.completedAt || s.startedAt))} · ${s.exerciseBlocks ? s.exerciseBlocks.length : 0} gyakorlat</div>
+          <div class="row muted">
+            <span>${esc(fmtDateTime(s.completedAt || s.startedAt))} · ${s.exerciseBlocks ? s.exerciseBlocks.length : 0} gyakorlat</span>
+            <span>${s.completedAt ? 'Teljesítve' : 'Folyamatban'}</span>
+          </div>
+          <div class="row" style="margin-top:8px;justify-content:flex-start;">
+            <button class="btn small" data-session-toggle="${index}">Gyakorlatok és sorozatok</button>
+          </div>
+          <div class="session-detail" data-session-detail="${index}" hidden>
+            ${renderSessionBlocks(s)}
+          </div>
         </div>`,
             )
             .join('');
@@ -338,6 +452,23 @@ async function openClient(userId) {
         toast(text, false);
       }
     });
+
+    // Expand/collapse each logged session's exercise + set detail.
+    $$('#clientDetail [data-session-toggle]').forEach((node) =>
+      node.addEventListener('click', () => {
+        const index = node.dataset.sessionToggle;
+        const panel = $(`#clientDetail [data-session-detail="${index}"]`);
+        if (!panel) return;
+        const opening = panel.hasAttribute('hidden');
+        if (opening) {
+          panel.removeAttribute('hidden');
+          node.textContent = 'Sorozatok elrejtése';
+        } else {
+          panel.setAttribute('hidden', '');
+          node.textContent = 'Gyakorlatok és sorozatok';
+        }
+      }),
+    );
 
     $('#clientDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {

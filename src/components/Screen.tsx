@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, typography } from '../theme/tokens';
 
@@ -12,7 +12,15 @@ interface ScreenProps {
   footer?: ReactNode;
 }
 
-/** Dark-mode screen scaffold: safe area + title block + optional scroll body. */
+/**
+ * Dark-mode screen scaffold: safe area + title block + optional scroll body.
+ *
+ * The whole header/body/footer column is wrapped in a KeyboardAvoidingView so a
+ * focused input near the bottom of a form (e.g. the Számlázási adatok street /
+ * tax fields) is never hidden behind the on-screen keyboard. iOS uses `padding`
+ * (the keyboard overlays the view); Android uses `height` so the shrunk viewport
+ * scrolls the focused field into sight.
+ */
 export function Screen({ title, subtitle, children, scroll = true, footer }: ScreenProps) {
   const body = scroll ? (
     <ScrollView
@@ -20,6 +28,7 @@ export function Screen({ title, subtitle, children, scroll = true, footer }: Scr
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
     >
       {children}
     </ScrollView>
@@ -29,12 +38,17 @@ export function Screen({ title, subtitle, children, scroll = true, footer }: Scr
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{title}</Text>
-        {subtitle !== undefined ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
-      </View>
-      {body}
-      {footer !== undefined ? <View style={styles.footer}>{footer}</View> : null}
+      <KeyboardAvoidingView
+        style={styles.avoider}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>{title}</Text>
+          {subtitle !== undefined ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+        </View>
+        {body}
+        {footer !== undefined ? <View style={styles.footer}>{footer}</View> : null}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -43,6 +57,9 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  avoider: {
+    flex: 1,
   },
   header: {
     paddingHorizontal: spacing.lg,

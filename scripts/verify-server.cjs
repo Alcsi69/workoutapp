@@ -196,6 +196,26 @@ async function main() {
     assert.equal(client.completedSessionCount, 1);
   });
 
+  await check('GET /api/admin/clients/:id returns the logged session with its exercises, sets and reps', async () => {
+    const res = await http(
+      `${apiBase}/api/admin/clients/${encodeURIComponent(repository.USER_PROFILE_ID)}`,
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.sessions.length, 1, 'one pushed session');
+    const session = res.body.sessions[0];
+    assert.ok(
+      Array.isArray(session.exerciseBlocks) && session.exerciseBlocks.length >= 1,
+      'session carries its exercise blocks',
+    );
+    const block = session.exerciseBlocks[0];
+    assert.ok(block.exercise && block.exercise.nameHu, 'block hydrated with the catalog name');
+    assert.equal(block.sets.length, 1, 'the logged set is present');
+    assert.equal(block.sets[0].setType, 'working');
+    assert.equal(block.sets[0].actualWeightKg, 90);
+    assert.equal(block.sets[0].actualReps, 8);
+    assert.equal(block.sets[0].rpe, 8);
+  });
+
   await check('GET /api/admin/exercises serves the 157-exercise catalog', async () => {
     const res = await http(`${apiBase}/api/admin/exercises`);
     assert.equal(res.status, 200);

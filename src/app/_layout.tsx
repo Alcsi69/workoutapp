@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { AutoSync } from '../components/AutoSync';
 import { getDatabase } from '../db/client';
 import hu from '../i18n/hu';
 import { colors, spacing, typography } from '../theme/tokens';
@@ -51,6 +52,7 @@ export default function RootLayout() {
   return (
     <>
       <StatusBar style="light" />
+      <AutoSync />
       <Stack screenOptions={{ headerShown: false, contentStyle: styles.stack }} />
     </>
   );
