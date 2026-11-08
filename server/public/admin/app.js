@@ -867,6 +867,14 @@ function renderCatalogList() {
 function init() {
   $$('.nav-btn').forEach((btn) => btn.addEventListener('click', () => showView(btn.dataset.view)));
   $('#slotCreate').addEventListener('click', createSlot);
+  // Client list refresh (the browser analog of a pull-to-refresh control): re-fetches
+  // the client list, and the open detail panel, straight from the backend.
+  $('#clientsRefresh').addEventListener('click', () => {
+    void loadClients();
+    if (state.selectedClientId) {
+      void openClient(state.selectedClientId);
+    }
+  });
   showView('overview');
 }
 

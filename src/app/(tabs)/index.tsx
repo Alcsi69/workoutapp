@@ -14,6 +14,7 @@ import {
 } from '../../db/repository';
 import type { ActiveSessionSummary } from '../../db/repository';
 import { pickRecommendedSession } from '../../services/recommendation';
+import { useSyncRefresh } from '../../hooks/useSyncRefresh';
 import { formatTodayHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
@@ -66,6 +67,14 @@ export default function WorkoutHomeScreen() {
     ]);
     return { profile, templates, active };
   }, []);
+
+  /** Re-reads the home snapshot after a pull-to-refresh sync. */
+  const reload = useCallback(async (): Promise<void> => {
+    setData(await load());
+    setError(null);
+  }, [load]);
+
+  const { refreshing, refresh } = useSyncRefresh(reload);
 
   useFocusEffect(
     useCallback(() => {
@@ -132,7 +141,12 @@ export default function WorkoutHomeScreen() {
   const peak = recommended !== null ? peakLoad(recommended.template) : null;
 
   return (
-    <Screen title={hu.tabs.workout} subtitle={formatTodayHu()}>
+    <Screen
+      title={hu.tabs.workout}
+      subtitle={formatTodayHu()}
+      onRefresh={refresh}
+      refreshing={refreshing}
+    >
       {active !== null ? (
         <Card
           tone="accent"

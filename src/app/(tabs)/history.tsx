@@ -1,10 +1,17 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Button } from '../../components/Button';
 import { Chip, Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
-import { SyncCard } from '../../components/SyncCard';
 import { CORE_LIFT_IDS, ProgressionView } from '../../components/history/ProgressionView';
 import { getDatabase } from '../../db/client';
 import {
@@ -13,6 +20,7 @@ import {
   getSessionHistory,
 } from '../../db/repository';
 import type { SessionHistorySummary } from '../../db/repository';
+import { useSyncRefresh } from '../../hooks/useSyncRefresh';
 import { totalVolumeKg } from '../../services/analytics';
 import { formatDateTimeHu, formatDurationHu, formatPaceHu } from '../../services/format';
 import hu from '../../i18n/hu';
@@ -177,6 +185,20 @@ export default function HistoryScreen() {
   const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(CORE_LIFT_IDS[0]);
   const [error, setError] = useState<string | null>(null);
 
+  /** Re-reads the local log — used by the pull-to-refresh control after a sync. */
+  const reload = useCallback(async (): Promise<void> => {
+    const db = await getDatabase();
+    const [nextSessions, nextCatalog] = await Promise.all([
+      getSessionHistory(db),
+      getExerciseCatalog(db),
+    ]);
+    setSessions(nextSessions);
+    setCatalog(nextCatalog);
+    setError(null);
+  }, []);
+
+  const { refreshing, refresh } = useSyncRefresh(reload);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -254,11 +276,18 @@ export default function HistoryScreen() {
           data={sessions}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => <SessionRow session={item} />}
-          ListHeaderComponent={<SyncCard />}
-          ListHeaderComponentStyle={styles.listHeader}
           contentContainerStyle={styles.list}
           style={styles.listBody}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={refresh}
+              tintColor={colors.accent}
+              colors={[colors.accent]}
+              progressBackgroundColor={colors.surface}
+            />
+          }
         />
       ) : (
         <ProgressionView
@@ -290,9 +319,6 @@ const styles = StyleSheet.create({
   },
   listBody: {
     flex: 1,
-  },
-  listHeader: {
-    marginBottom: spacing.md,
   },
   row: {
     backgroundColor: colors.surface,

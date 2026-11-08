@@ -14,6 +14,7 @@ import {
   startSessionFromTemplate,
 } from '../../db/repository';
 import { generateProgramFromProfile } from '../../services/routineGenerator';
+import { useSyncRefresh } from '../../hooks/useSyncRefresh';
 import { formatRestHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
@@ -138,6 +139,20 @@ export default function TemplatesScreen() {
     setTemplates(await getWorkoutTemplates(db));
   }, []);
 
+  /** Re-reads templates + catalog after a pull-to-refresh sync. */
+  const reload = useCallback(async (): Promise<void> => {
+    const db = await getDatabase();
+    const [nextTemplates, nextCatalog] = await Promise.all([
+      getWorkoutTemplates(db),
+      getExerciseCatalog(db),
+    ]);
+    setTemplates(nextTemplates);
+    setCatalog(nextCatalog);
+    setError(null);
+  }, []);
+
+  const { refreshing, refresh } = useSyncRefresh(reload);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -217,7 +232,12 @@ export default function TemplatesScreen() {
   );
 
   return (
-    <Screen title={hu.tabs.templates} subtitle={hu.screens.templates.subtitle}>
+    <Screen
+      title={hu.tabs.templates}
+      subtitle={hu.screens.templates.subtitle}
+      onRefresh={refresh}
+      refreshing={refreshing}
+    >
       <Card title={hu.screens.templates.regenerate} caption={hu.screens.templates.regenerateHint}>
         <Button
           label={hu.screens.templates.regenerate}

@@ -20,10 +20,11 @@ import { colors, radius, spacing, typography } from '../theme/tokens';
 import type { ClientSyncPushPayload } from '../types/workout';
 
 /**
- * Szinkronizálás card: shows how many sessions are still `local_dirty`, lets the
- * user edit the coach backend URL, flush the local state (full Push + Pull when a
- * backend is configured; a dry-run export otherwise), and preview the exact
- * outgoing JSON payload on device.
+ * Settings card for the Profil tab. Shows how many sessions are still
+ * `local_dirty`, lets the user edit the coach backend URL, and exposes the single
+ * manual "Force Sync" fallback (a full Push + Pull) plus the outgoing-JSON preview
+ * for troubleshooting. Routine sync happens automatically in the background, so
+ * this card is the only place a manual sync lives.
  */
 export function SyncCard() {
   const [dirtyCount, setDirtyCount] = useState<number | null>(null);
@@ -171,8 +172,10 @@ export function SyncCard() {
 
       {message !== null ? <Text style={styles.message}>{message}</Text> : null}
 
+      <Text style={styles.caption}>{hu.sync.forceSyncHint}</Text>
       <Button
-        label={syncing ? hu.sync.syncing : hu.sync.syncNow}
+        label={syncing ? hu.sync.syncing : hu.sync.forceSync}
+        variant="secondary"
         onPress={() => {
           void handleSync();
         }}
@@ -180,7 +183,7 @@ export function SyncCard() {
       />
       <Button
         label={hu.sync.preview}
-        variant="secondary"
+        variant="ghost"
         onPress={() => {
           void handlePreview();
         }}

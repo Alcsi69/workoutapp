@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, typography } from '../theme/tokens';
 
@@ -10,6 +18,10 @@ interface ScreenProps {
   scroll?: boolean;
   /** Rendered below the scroll area, pinned to the bottom (e.g. onboarding CTA). */
   footer?: ReactNode;
+  /** Enables pull-to-refresh on the scroll body (main list views). */
+  onRefresh?: () => void;
+  /** Spinner state for the pull-to-refresh control. */
+  refreshing?: boolean;
 }
 
 /**
@@ -20,8 +32,29 @@ interface ScreenProps {
  * tax fields) is never hidden behind the on-screen keyboard. iOS uses `padding`
  * (the keyboard overlays the view); Android uses `height` so the shrunk viewport
  * scrolls the focused field into sight.
+ *
+ * Pass `onRefresh` to attach a pull-to-refresh control to the scroll body.
  */
-export function Screen({ title, subtitle, children, scroll = true, footer }: ScreenProps) {
+export function Screen({
+  title,
+  subtitle,
+  children,
+  scroll = true,
+  footer,
+  onRefresh,
+  refreshing = false,
+}: ScreenProps) {
+  const refreshControl =
+    onRefresh !== undefined ? (
+      <RefreshControl
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        tintColor={colors.accent}
+        colors={[colors.accent]}
+        progressBackgroundColor={colors.surface}
+      />
+    ) : undefined;
+
   const body = scroll ? (
     <ScrollView
       style={styles.scroll}
@@ -29,6 +62,7 @@ export function Screen({ title, subtitle, children, scroll = true, footer }: Scr
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
+      refreshControl={refreshControl}
     >
       {children}
     </ScrollView>

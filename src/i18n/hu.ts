@@ -435,7 +435,9 @@ const hu = {
     title: 'Szinkronizálás',
     pending: 'szinkronizálásra vár',
     allSynced: 'Minden edzés szinkronizálva.',
-    syncNow: 'Szinkronizálás most',
+    forceSync: 'Kényszerített szinkronizálás',
+    forceSyncHint:
+      'Vészmegoldás hibakereséshez: azonnali push + pull, az automatikus háttérszinkronizálás megkerülésével.',
     syncing: 'Szinkronizálás…',
     preview: 'JSON előnézet',
     previewTitle: 'Kimenő szinkronizálási csomag',
