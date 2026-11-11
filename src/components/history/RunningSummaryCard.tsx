@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   statValue: {
-    color: colors.accent,
+    color: colors.progress,
     fontSize: typography.sizes.sm,
     fontWeight: typography.weights.semibold,
     fontVariant: ['tabular-nums'],

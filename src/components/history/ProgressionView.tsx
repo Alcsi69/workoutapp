@@ -285,7 +285,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   statValue: {
-    color: colors.accent,
+    color: colors.progress,
     fontSize: typography.sizes.sm,
     fontWeight: typography.weights.semibold,
     fontVariant: ['tabular-nums'],
@@ -335,7 +335,7 @@ const styles = StyleSheet.create({
   barFill: {
     height: 6,
     borderRadius: radius.pill,
-    backgroundColor: colors.accent,
+    backgroundColor: colors.progress,
   },
   chartFoot: {
     flexDirection: 'row',

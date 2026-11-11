@@ -34,7 +34,7 @@ export type PillTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger';
 
 const PILL_COLORS: Record<PillTone, { background: string; text: string }> = {
   neutral: { background: colors.surfaceElevated, text: colors.textSecondary },
-  accent: { background: colors.accentMuted, text: colors.accent },
+  accent: { background: colors.accent, text: colors.accentText },
   success: { background: colors.successMuted, text: colors.success },
   warning: { background: colors.warningMuted, text: colors.warning },
   danger: { background: colors.dangerMuted, text: colors.danger },
@@ -115,7 +115,7 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
   },
   chipLabelSelected: {
-    color: colors.accent,
+    color: colors.textPrimary,
     fontWeight: typography.weights.semibold,
   },
   pill: {

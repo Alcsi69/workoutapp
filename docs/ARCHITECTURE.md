@@ -5,7 +5,8 @@
 - **Routing:** Expo Router (file-based routing in `src/app/`).
 - **Local Database (Offline-First):** `expo-sqlite` for workout templates, exercise catalog, active session state, completed workout logs, client billing, and 1-on-1 coaching bookings. **Schema v6** (see `src/db/schema.ts`).
 - **State Management:** Zustand (`src/store/`) for ephemeral active workout UI state (rest timers, onboarding draft, quick swaps).
-- **Styling:** `StyleSheet.create` with a centralized design token file (`src/theme/tokens.ts`). Dark-mode native by default. Zero heavy third-party component libraries.
+- **Styling:** `StyleSheet.create` with a centralized design token file (`src/theme/tokens.ts`). Dark-mode native by default. Zero heavy third-party component libraries. The palette is exactly five brand colors — Licorice `#131112`, Ghost White `#F7F7FF`, Royal Blue `#2563EB`, Electric Lime `#CCFF00`, Ruby Magenta `#D81159` — with card surfaces/borders derived as subtle tints of licorice and ghost white. Buttons: `primary` = lime + dark text, `secondary` = royal blue, `danger` = magenta, `ghost` = text only.
+- **Cross-platform:** the same bundle runs natively and on the web (Expo Web, `web.output: "single"`, exported to `dist/`). `expo-sqlite` uses wa-sqlite/IndexedDB on web, which requires `.wasm` as a Metro asset plus `Cross-Origin-Opener-Policy: same-origin` / `Cross-Origin-Embedder-Policy: credentialless` on both the dev server and the production host.
 - **Localization:** Hungarian (`hu`) primary UI language, structured via a clean dictionary (`src/i18n/hu.ts`) so strings are never hardcoded in components.
 - **Clipboard:** `expo-clipboard` powers the full-database JSON backup/restore in the Profil tab.
 
@@ -81,4 +82,4 @@ Migrations live in `src/db/schema.ts` (`migrate`, guarded by SQLite `user_versio
 - Every local mutation flags its session `local_dirty` so the sync queue can pick up exactly what changed. Coaching bookings carry their own `sync_status` for the same reason.
 - Contact & billing fields are validated by the pure `services/billing.ts` helpers before any persist; the UI maps `missingFields`/`invalidEmail` to Hungarian strings rather than the validator hardcoding messages.
 - New UI strings are added to `src/i18n/hu.ts`; unions that map to UI text are cross-checked with `satisfies`-style records so a new member forces a translation.
-- Verify before shipping: `npx tsc --noEmit`, `npx expo lint` (0 warnings), `npm run verify:db` (headless SQLite checks), `npm run verify:server` (end-to-end server + mobile sync), `npx expo export --platform android`.
+- Verify before shipping: `npx tsc --noEmit`, `npx expo lint` (0 warnings), `npm run verify:db` (headless SQLite checks), `npm run verify:server` (end-to-end server + mobile sync), `npx expo export --platform android`, `npm run build:web` (web bundle in `dist/`).

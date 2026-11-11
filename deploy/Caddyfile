@@ -1,0 +1,56 @@
+# WorkoutApp — Caddy front door on the Azure VPS.
+#
+#   /opt/workoutapp/dist              static Expo Web bundle (npx expo export --platform web)
+#   127.0.0.1:4000                    coach API + admin portal (docker compose, bound to loopback)
+#
+# Copy to /etc/caddy/Caddyfile and `sudo systemctl reload caddy`.
+# Certificates are issued automatically once the A records point at this VM.
+
+# --- Web app ---------------------------------------------------------------
+alexercise.app, www.alexercise.app {
+	encode zstd gzip
+
+	# SPA: Expo Router output "single" has one index.html; deep links must fall
+	# back to it, otherwise /history or /workout/xyz 404 on refresh.
+	root * /opt/workoutapp/dist
+	try_files {path} /index.html
+	file_server
+
+	# expo-sqlite on web is SQLite compiled to WebAssembly (wa-sqlite) and needs
+	# SharedArrayBuffer, which browsers only expose to cross-origin isolated
+	# documents. Without these two headers the app boots but its database fails.
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "credentialless"
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# Hashed bundles never change; the shell/manifest must always revalidate.
+	@immutable path /_expo/static/* /assets/* /icons/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	@shell path /index.html /manifest.json
+	header @shell Cache-Control "no-cache"
+}
+
+# --- Coach API + admin portal ---------------------------------------------
+api.alexercise.app {
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:4000 {
+		# Full session logs travel in the sync payload.
+		request_body {
+			max_size 10MB
+		}
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "SAMEORIGIN"
+	}
+}

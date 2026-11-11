@@ -2,14 +2,24 @@ import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { colors, radius, spacing, typography } from '../theme/tokens';
 
+type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+
 interface ButtonProps {
   label: string;
   onPress: () => void;
-  variant?: 'primary' | 'secondary' | 'ghost';
+  /** primary = lime CTA, secondary = royal blue, danger = ruby magenta. */
+  variant?: ButtonVariant;
   disabled?: boolean;
   loading?: boolean;
   style?: StyleProp<ViewStyle>;
 }
+
+const VARIANT_STYLE = {
+  primary: 'primary',
+  secondary: 'secondary',
+  ghost: 'ghost',
+  danger: 'danger',
+} as const;
 
 export function Button({
   label,
@@ -21,6 +31,13 @@ export function Button({
 }: ButtonProps) {
   const isInactive = disabled || loading;
 
+  const spinnerColor =
+    variant === 'primary'
+      ? colors.ctaText
+      : variant === 'ghost'
+        ? colors.textSecondary
+        : colors.accentText;
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -29,22 +46,21 @@ export function Button({
       disabled={isInactive}
       style={({ pressed }) => [
         styles.base,
-        variant === 'primary' ? styles.primary : null,
-        variant === 'secondary' ? styles.secondary : null,
-        variant === 'ghost' ? styles.ghost : null,
+        styles[VARIANT_STYLE[variant]],
         pressed && !isInactive ? styles.pressed : null,
         isInactive ? styles.inactive : null,
         style,
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={variant === 'primary' ? colors.textInverse : colors.accent} />
+        <ActivityIndicator color={spinnerColor} />
       ) : (
         <Text
           style={[
             styles.label,
             variant === 'primary' ? styles.labelPrimary : null,
             variant === 'ghost' ? styles.labelGhost : null,
+            variant === 'danger' ? styles.labelDanger : null,
           ]}
         >
           {label}
@@ -63,15 +79,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primary: {
-    backgroundColor: colors.accent,
+    backgroundColor: colors.cta,
   },
   secondary: {
-    backgroundColor: colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
+    backgroundColor: colors.accent,
   },
   ghost: {
     backgroundColor: colors.transparent,
+  },
+  danger: {
+    backgroundColor: colors.danger,
   },
   pressed: {
     opacity: 0.82,
@@ -80,14 +97,17 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   label: {
-    color: colors.textPrimary,
+    color: colors.accentText,
     fontSize: typography.sizes.md,
     fontWeight: typography.weights.semibold,
   },
   labelPrimary: {
-    color: colors.textInverse,
+    color: colors.ctaText,
   },
   labelGhost: {
     color: colors.textSecondary,
+  },
+  labelDanger: {
+    color: colors.accentText,
   },
 });

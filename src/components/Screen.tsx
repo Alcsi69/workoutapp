@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { colors, spacing, typography } from '../theme/tokens';
+import { colors, layout, spacing, typography } from '../theme/tokens';
 
 interface ScreenProps {
   title: string;
@@ -25,13 +25,23 @@ interface ScreenProps {
 }
 
 /**
+ * Keyboard behavior per platform. iOS pads the view (the keyboard overlays it),
+ * Android shrinks the viewport so the focused field scrolls into sight, and the
+ * web browser handles this natively — no wrapper behavior needed there.
+ */
+const KEYBOARD_BEHAVIOR =
+  Platform.OS === 'ios' ? 'padding' : Platform.OS === 'android' ? 'height' : undefined;
+
+/**
  * Dark-mode screen scaffold: safe area + title block + optional scroll body.
  *
  * The whole header/body/footer column is wrapped in a KeyboardAvoidingView so a
  * focused input near the bottom of a form (e.g. the Számlázási adatok street /
- * tax fields) is never hidden behind the on-screen keyboard. iOS uses `padding`
- * (the keyboard overlays the view); Android uses `height` so the shrunk viewport
- * scrolls the focused field into sight.
+ * tax fields) is never hidden behind the on-screen keyboard.
+ *
+ * The column is capped at `layout.contentMaxWidth` and centred, so the same
+ * mobile-first layout reads as a comfortable phone-width column on a desktop
+ * browser instead of stretching edge to edge.
  *
  * Pass `onRefresh` to attach a pull-to-refresh control to the scroll body.
  */
@@ -72,16 +82,15 @@ export function Screen({
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <KeyboardAvoidingView
-        style={styles.avoider}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <View style={styles.header}>
-          <Text style={styles.title}>{title}</Text>
-          {subtitle !== undefined ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+      <KeyboardAvoidingView style={styles.avoider} behavior={KEYBOARD_BEHAVIOR}>
+        <View style={styles.column}>
+          <View style={styles.header}>
+            <Text style={styles.title}>{title}</Text>
+            {subtitle !== undefined ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          </View>
+          {body}
+          {footer !== undefined ? <View style={styles.footer}>{footer}</View> : null}
         </View>
-        {body}
-        {footer !== undefined ? <View style={styles.footer}>{footer}</View> : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -94,6 +103,12 @@ const styles = StyleSheet.create({
   },
   avoider: {
     flex: 1,
+  },
+  column: {
+    flex: 1,
+    width: '100%',
+    maxWidth: layout.contentMaxWidth,
+    alignSelf: 'center',
   },
   header: {
     paddingHorizontal: spacing.lg,

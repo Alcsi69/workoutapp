@@ -140,7 +140,7 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.sm,
   },
   paceValue: {
-    color: colors.accent,
+    color: colors.progress,
     fontSize: typography.sizes.lg,
     fontWeight: typography.weights.bold,
     fontVariant: ['tabular-nums'],

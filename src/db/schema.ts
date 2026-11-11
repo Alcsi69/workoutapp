@@ -268,7 +268,14 @@ export const migrations: Migration[] = [
  * Idempotent: re-running on an up-to-date database is a no-op.
  */
 export async function migrate(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync('PRAGMA journal_mode = WAL;');
+  try {
+    // WAL is a native-filesystem journal mode. Web (wa-sqlite over IndexedDB)
+    // has no WAL; the pragma may reject there, which is harmless — the SQLite
+    // web backend keeps its own durability. Native behaviour is unchanged.
+    await db.execAsync('PRAGMA journal_mode = WAL;');
+  } catch {
+    // Ignore: journal mode is a performance/durability hint, not a requirement.
+  }
   await db.execAsync('PRAGMA foreign_keys = ON;');
 
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version;');

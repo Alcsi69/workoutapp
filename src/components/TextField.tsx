@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import type { KeyboardTypeOptions } from 'react-native';
 import { colors, radius, spacing, typography } from '../theme/tokens';
@@ -30,6 +31,7 @@ export function TextField({
   autoCapitalize = 'sentences',
   autoCorrect = false,
 }: TextFieldProps) {
+  const [focused, setFocused] = useState(false);
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
@@ -42,7 +44,13 @@ export function TextField({
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
         selectionColor={colors.accent}
-        style={[styles.input, error !== null && error !== undefined ? styles.inputError : null]}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={[
+          styles.input,
+          focused ? styles.inputFocused : null,
+          error !== null && error !== undefined ? styles.inputError : null,
+        ]}
       />
       {hint !== undefined && (error === null || error === undefined) ? (
         <Text style={styles.hint}>{hint}</Text>
@@ -76,6 +84,9 @@ const styles = StyleSheet.create({
   },
   inputError: {
     borderColor: colors.danger,
+  },
+  inputFocused: {
+    borderColor: colors.borderFocus,
   },
   hint: {
     color: colors.textMuted,

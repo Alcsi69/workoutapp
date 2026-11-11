@@ -218,7 +218,7 @@ Add that line to a cron job and keep the copies off the VM.
 | `Error: Cannot find module 'node:sqlite'` | Runtime image older than Node 22.5 → keep `node:24-bookworm-slim`. |
 | `/admin` returns 404 | `server/public/admin` was not copied — rebuild without a stale context (`docker compose build --no-cache`). |
 | `Bind for 0.0.0.0:4000 failed: port is already allocated` | Something else holds 4000 (`sudo ss -ltnp | grep 4000`); stop it or change the host port. |
-| Admin page loads but API calls fail from another origin | CORS is already permissive (`*`); the usual cause is mixed content (page on HTTPS calling `http://`) — use the HTTPS URL. |
+| Admin page loads but API calls fail from another origin | Browser CORS preflight rejected. The API allows `https://alexercise.app`, `https://www.alexercise.app` and local dev origins by default; extend the allowlist with `CORS_ORIGINS` (comma-separated) in the compose file. Mixed content (page on HTTPS calling `http://`) also fails — use the HTTPS URL. |
 | Healthcheck stays `unhealthy` | `docker compose logs workout-backend`; the healthcheck probes `127.0.0.1:4000/api/health` inside the container. |
 | Database empty after a redeploy | The `./data:/app/server/data` volume line was removed or the compose file was run from another directory. |
 
@@ -235,3 +235,130 @@ Add that line to a cron job and keep the copies off the VM.
   The API is expected to sit behind the reverse proxy. If coach authentication is
   added later, keep credentials in an `.env` file next to the compose file and
   reference them via `environment:` / `env_file:` — never bake them into the image.
+
+---
+
+## 9. Expo Web app hosting (`https://alexercise.app`)
+
+The same Expo app is exported as a static SPA and served by Caddy from the VM.
+The build is fully static — no Node server, no SSR.
+
+### 9.1 Build the bundle
+
+`app.json` already sets `web.bundler: "metro"`, `web.output: "single"`,
+`themeColor: "#131112"` and `backgroundColor: "#131112"`, so mobile browsers get
+the dark installable PWA (manifest + icons are generated into `dist/`).
+
+```bash
+cd /opt/workoutapp
+npm ci
+npx expo export --platform web      # writes ./dist
+```
+
+`dist/` contains `index.html`, `_expo/static/**` (hashed JS/CSS), `assets/**`,
+`metadata.json`, the PWA `manifest.json` and the icons from `public/icons/`.
+
+### 9.2 CORS
+
+The web bundle calls `https://api.alexercise.app/api` from the browser, so the API
+must answer preflights (`OPTIONS`) with an `Access-Control-Allow-Origin` echoing
+`https://alexercise.app`. `server/src/app.ts` does this for the origins listed in
+`CORS_ORIGINS` (set in `server/docker-compose.yml`, defaults include
+`https://alexercise.app` and `https://www.alexercise.app`). Verify after deploy:
+
+```bash
+curl -i -X OPTIONS https://api.alexercise.app/api/sync/push \
+  -H 'Origin: https://alexercise.app' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type'
+# expect: HTTP/2 204 + access-control-allow-origin: https://alexercise.app
+```
+
+### 9.3 Caddyfile (static SPA + PWA headers)
+
+The app persists workouts in SQLite compiled to WebAssembly (`expo-sqlite` →
+wa-sqlite). That backend needs `SharedArrayBuffer`, which browsers expose only to
+**cross-origin isolated** documents — so `Cross-Origin-Opener-Policy` and
+`Cross-Origin-Embedder-Policy` are mandatory on the web origin. The SPA also needs
+`try_files {path} /index.html` so deep links (`/history`, `/workout/xyz`) resolve.
+
+The ready-to-copy file lives at `deploy/Caddyfile` in this repo; the relevant block
+is reproduced here.
+
+```caddyfile
+# Web app
+alexercise.app, www.alexercise.app {
+    encode zstd gzip
+
+    root * /opt/workoutapp/dist
+    try_files {path} /index.html
+    file_server
+
+    # Required by expo-sqlite (wa-sqlite / SharedArrayBuffer) on web.
+    header {
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Embedder-Policy "credentialless"
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Hashed bundle assets are immutable; the shell and manifest must revalidate.
+    @immutable path /_expo/static/* /assets/*
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    @shell path /index.html /manifest.json /*
+    header @shell Cache-Control "no-cache"
+}
+
+# Coach API (existing block, unchanged)
+api.alexercise.app {
+    encode gzip
+
+    reverse_proxy 127.0.0.1:4000 {
+        request_body {
+            max_size 10MB
+        }
+    }
+
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Frame-Options "SAMEORIGIN"
+    }
+}
+```
+
+```bash
+sudo systemctl reload caddy
+```
+
+> Do **not** add `X-Frame-Options: DENY` or a restrictive
+> `Content-Security-Policy` to the web app origin without allowing `wasm-unsafe-eval`;
+> the SQLite WASM module needs to compile its binary at runtime.
+
+### 9.4 Redeploying the web app
+
+```bash
+cd /opt/workoutapp
+git pull
+npm ci
+npx expo export --platform web
+sudo systemctl reload caddy   # only needed if the Caddyfile changed
+```
+
+Caddy serves `dist/` straight from disk, so replacing the directory is the deploy.
+The service worker is not registered by default, so a plain reload picks up the new
+bundle. Keep the previous `dist/` (`mv dist dist.prev`) if you want a one-command
+rollback.
+
+### 9.5 Smoke check
+
+```bash
+curl -sI https://alexercise.app | grep -i "cross-origin\|content-type"
+curl -s  https://alexercise.app/manifest.json | head -c 400
+curl -sI https://alexercise.app/history    # 200 text/html (SPA fallback)
+```
+

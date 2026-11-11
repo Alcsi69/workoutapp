@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   StyleSheet,
   Text,
   TextInput,
@@ -25,6 +24,7 @@ import {
   exportFullDatabaseSnapshot,
   importFullDatabaseSnapshot,
 } from '../../services/backupService';
+import { confirm, notify } from '../../services/dialogs';
 import { formatDateHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
@@ -72,9 +72,9 @@ function BackupSection({ onRestored }: { onRestored: () => void }) {
       const db = await getDatabase();
       const json = await exportFullDatabaseSnapshot(db);
       await Clipboard.setStringAsync(json);
-      Alert.alert(hu.backup.title, hu.backup.copied);
+      notify(hu.backup.title, hu.backup.copied);
     } catch (cause: unknown) {
-      Alert.alert(hu.backup.title, cause instanceof Error ? cause.message : String(cause));
+      notify(hu.backup.title, cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
@@ -84,36 +84,36 @@ function BackupSection({ onRestored }: { onRestored: () => void }) {
     if (importText.trim().length === 0) {
       return;
     }
-    Alert.alert(hu.backup.loadTitle, hu.backup.loadConfirm, [
-      { text: hu.common.cancel, style: 'cancel' },
-      {
-        text: hu.backup.load,
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            setBusy(true);
-            try {
-              const db = await getDatabase();
-              const summary = await importFullDatabaseSnapshot(db, importText);
-              setImportText('');
-              onRestored();
-              Alert.alert(
-                hu.backup.imported,
-                `${summary.sessionLogs} ${hu.screens.history.exercisesLabel}, ` +
-                  `${summary.customExercises} ${hu.picker.customBadge}`,
-              );
-            } catch (cause: unknown) {
-              Alert.alert(
-                hu.backup.importError,
-                cause instanceof Error ? cause.message : String(cause),
-              );
-            } finally {
-              setBusy(false);
-            }
-          })();
-        },
+    confirm({
+      title: hu.backup.loadTitle,
+      message: hu.backup.loadConfirm,
+      confirmLabel: hu.backup.load,
+      cancelLabel: hu.common.cancel,
+      destructive: true,
+      onConfirm: () => {
+        void (async () => {
+          setBusy(true);
+          try {
+            const db = await getDatabase();
+            const summary = await importFullDatabaseSnapshot(db, importText);
+            setImportText('');
+            onRestored();
+            notify(
+              hu.backup.imported,
+              `${summary.sessionLogs} ${hu.screens.history.exercisesLabel}, ` +
+                `${summary.customExercises} ${hu.picker.customBadge}`,
+            );
+          } catch (cause: unknown) {
+            notify(
+              hu.backup.importError,
+              cause instanceof Error ? cause.message : String(cause),
+            );
+          } finally {
+            setBusy(false);
+          }
+        })();
       },
-    ]);
+    });
   };
 
   return (
@@ -140,7 +140,7 @@ function BackupSection({ onRestored }: { onRestored: () => void }) {
       />
       <Button
         label={hu.backup.load}
-        variant="secondary"
+        variant="danger"
         onPress={restoreBackup}
         disabled={importText.trim().length === 0}
       />

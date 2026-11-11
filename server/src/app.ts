@@ -117,6 +117,39 @@ export type HttpHandler = (req: IncomingMessage, res: ServerResponse) => void;
 export interface AppOptions {
   /** Absolute path to the static admin web (served at /admin). */
   adminDir?: string | null;
+  /**
+   * Origins allowed to call the API from a browser. `'*'` disables the allowlist
+   * check entirely. Defaults to the production web app + local dev servers;
+   * override with the `CORS_ORIGINS` env var (comma-separated).
+   */
+  allowedOrigins?: string[] | '*' | null;
+}
+
+/** Origins a browser client is allowed to sync from when nothing is configured. */
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://alexercise.app',
+  'https://www.alexercise.app',
+  'https://api.alexercise.app',
+  'http://localhost:8081',
+  'http://localhost:19006',
+];
+
+/** Reads `CORS_ORIGINS` (comma-separated) and falls back to the defaults. */
+function resolveAllowedOrigins(explicit?: string[] | '*' | null): string[] | '*' {
+  if (explicit === '*') {
+    return '*';
+  }
+  if (Array.isArray(explicit)) {
+    return explicit;
+  }
+  const fromEnv = process.env.CORS_ORIGINS;
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
+    return fromEnv
+      .split(',')
+      .map((entry) => entry.trim().replace(/\/+$/, ''))
+      .filter((entry) => entry.length > 0);
+  }
+  return DEFAULT_ALLOWED_ORIGINS;
 }
 
 // --- Small helpers ----------------------------------------------------------
@@ -933,12 +966,22 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
 
 /** Builds the request handler bound to a database and options. */
 export function createApp(db: ServerDb, options: AppOptions = {}): HttpHandler {
+  const allowedOrigins = resolveAllowedOrigins(options.allowedOrigins);
+
   return (req, res) => {
-    // CORS: the admin web and the (potentially dev-server-hosted) client are
-    // cross-origin. Reflect a permissive policy for this local coach tool.
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS: the web app (https://alexercise.app) and local dev servers call this
+    // API cross-origin. Reflect only allowed origins; native clients send no
+    // Origin header and are unaffected. Set CORS_ORIGINS="*" to open it up.
+    const origin = req.headers.origin;
+    res.setHeader('Vary', 'Origin');
+    if (allowedOrigins === '*') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (typeof origin === 'string' && allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+    res.setHeader('Access-Control-Max-Age', '86400');
 
     if ((req.method ?? 'GET') === 'OPTIONS') {
       res.writeHead(204);

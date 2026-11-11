@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { Button } from '../../components/Button';
@@ -30,6 +30,7 @@ import {
   upsertSetLog,
 } from '../../db/repository';
 import type { RunningMetricsInput, SetLogInput } from '../../db/repository';
+import { confirm } from '../../services/dialogs';
 import {
   computeRestRemainingMs,
   restIsActive,
@@ -256,20 +257,20 @@ export default function WorkoutLoggerScreen() {
   /** Removes an exercise block from the session after confirmation. */
   const handleRemoveBlock = useCallback(
     (block: SessionExerciseBlock): void => {
-      Alert.alert(hu.logger.removeExercise, hu.logger.removeExerciseConfirm, [
-        { text: hu.common.cancel, style: 'cancel' },
-        {
-          text: hu.logger.removeExercise,
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              const db = await getDatabase();
-              await removeExerciseBlockFromSession(db, block.id);
-              await reload();
-            })();
-          },
+      confirm({
+        title: hu.logger.removeExercise,
+        message: hu.logger.removeExerciseConfirm,
+        confirmLabel: hu.logger.removeExercise,
+        cancelLabel: hu.common.cancel,
+        destructive: true,
+        onConfirm: () => {
+          void (async () => {
+            const db = await getDatabase();
+            await removeExerciseBlockFromSession(db, block.id);
+            await reload();
+          })();
         },
-      ]);
+      });
     },
     [reload],
   );
@@ -329,41 +330,41 @@ export default function WorkoutLoggerScreen() {
     if (detail === null) {
       return;
     }
-    Alert.alert(hu.logger.finishWorkout, hu.logger.finishConfirm, [
-      { text: hu.common.cancel, style: 'cancel' },
-      {
-        text: hu.logger.finishWorkout,
-        onPress: () => {
-          void (async () => {
-            const db = await getDatabase();
-            await completeSession(db, detail.id);
-            resetStore();
-            router.replace('/(tabs)/history');
-          })();
-        },
+    confirm({
+      title: hu.logger.finishWorkout,
+      message: hu.logger.finishConfirm,
+      confirmLabel: hu.logger.finishWorkout,
+      cancelLabel: hu.common.cancel,
+      onConfirm: () => {
+        void (async () => {
+          const db = await getDatabase();
+          await completeSession(db, detail.id);
+          resetStore();
+          router.replace('/(tabs)/history');
+        })();
       },
-    ]);
+    });
   }, [detail, resetStore]);
 
   const handleDiscard = useCallback((): void => {
     if (detail === null) {
       return;
     }
-    Alert.alert(hu.logger.discard, hu.logger.discardConfirmBody, [
-      { text: hu.common.cancel, style: 'cancel' },
-      {
-        text: hu.logger.discard,
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            const db = await getDatabase();
-            await discardSession(db, detail.id);
-            resetStore();
-            router.replace('/(tabs)');
-          })();
-        },
+    confirm({
+      title: hu.logger.discard,
+      message: hu.logger.discardConfirmBody,
+      confirmLabel: hu.logger.discard,
+      cancelLabel: hu.common.cancel,
+      destructive: true,
+      onConfirm: () => {
+        void (async () => {
+          const db = await getDatabase();
+          await discardSession(db, detail.id);
+          resetStore();
+          router.replace('/(tabs)');
+        })();
       },
-    ]);
+    });
   }, [detail, resetStore]);
 
   if (detail === null) {
@@ -392,7 +393,7 @@ export default function WorkoutLoggerScreen() {
       footer={
         <View style={styles.footer}>
           <Button label={hu.logger.finishWorkout} onPress={handleFinish} />
-          <Button label={hu.logger.discard} variant="secondary" onPress={handleDiscard} />
+          <Button label={hu.logger.discard} variant="danger" onPress={handleDiscard} />
         </View>
       }
     >

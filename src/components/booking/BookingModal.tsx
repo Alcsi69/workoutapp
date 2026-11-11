@@ -89,7 +89,7 @@ export function BookingModal({ visible, slot, busy, onClose, onConfirm }: Bookin
             loading={busy}
             onPress={() => onConfirm(notes)}
           />
-          <Button label={hu.common.cancel} variant="secondary" onPress={onClose} disabled={busy} />
+          <Button label={hu.common.cancel} variant="ghost" onPress={onClose} disabled={busy} />
         </View>
       </View>
     </Modal>

@@ -219,7 +219,7 @@ export function BillingCard({
           }}
           loading={saving}
         />
-        <Button label={hu.common.cancel} variant="secondary" onPress={cancelEditing} />
+        <Button label={hu.common.cancel} variant="ghost" onPress={cancelEditing} />
       </Card>
     );
   }

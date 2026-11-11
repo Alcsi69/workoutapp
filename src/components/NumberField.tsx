@@ -25,6 +25,7 @@ export function NumberField({
   placeholder,
 }: NumberFieldProps) {
   const [text, setText] = useState<string>(String(value));
+  const [focused, setFocused] = useState(false);
   // Derive the draft from the incoming value during render (React's documented
   // "adjust state when a prop changes" pattern) instead of an effect, which
   // would schedule a second render pass after every parent update.
@@ -49,6 +50,7 @@ export function NumberField({
   };
 
   const handleBlur = (): void => {
+    setFocused(false);
     const normalized = text.replace(',', '.');
     const parsed = Number.parseFloat(normalized);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -59,10 +61,11 @@ export function NumberField({
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
-      <View style={styles.inputRow}>
+      <View style={[styles.inputRow, focused ? styles.inputRowFocused : null]}>
         <TextInput
           value={text}
           onChangeText={handleChange}
+          onFocus={() => setFocused(true)}
           onBlur={handleBlur}
           placeholder={placeholder}
           placeholderTextColor={colors.textMuted}
@@ -98,12 +101,19 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
   },
+  inputRowFocused: {
+    borderColor: colors.borderFocus,
+  },
   input: {
     flex: 1,
+    // Web: <input> has an intrinsic default width, so flex shrink needs an
+    // explicit minWidth or the unit suffix gets pushed out of the box.
+    minWidth: 0,
     minHeight: 44,
     color: colors.textPrimary,
     fontSize: typography.sizes.md,
     fontWeight: typography.weights.medium,
+    paddingVertical: spacing.sm,
   },
   unit: {
     color: colors.textMuted,

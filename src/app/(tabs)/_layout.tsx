@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs } from 'expo-router';
 import type { ColorValue } from 'react-native';
 import hu from '../../i18n/hu';
-import { colors, typography } from '../../theme/tokens';
+import { colors, layout, typography } from '../../theme/tokens';
 
 /**
  * React Navigation hands the tab icon a ColorValue (string | number | opaque),
@@ -23,6 +23,11 @@ export default function TabsLayout() {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
           borderTopWidth: 1,
+          // Wide desktop browsers: keep the tab bar aligned with the centred
+          // phone-width column instead of stretching across the monitor.
+          width: '100%',
+          maxWidth: layout.contentMaxWidth,
+          alignSelf: 'center',
         },
         tabBarLabelStyle: {
           fontSize: typography.sizes.xs,

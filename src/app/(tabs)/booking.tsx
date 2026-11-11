@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
@@ -14,6 +14,7 @@ import {
   getOpenCoachingSlots,
 } from '../../db/repository';
 import { useSyncRefresh } from '../../hooks/useSyncRefresh';
+import { confirm, notify } from '../../services/dialogs';
 import { formatDateTimeHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
@@ -111,7 +112,7 @@ function BookingRow({
       {upcoming ? (
         <Button
           label={hu.screens.booking.cancelBooking}
-          variant="secondary"
+          variant="danger"
           loading={busy}
           onPress={() => onCancel(booking)}
         />
@@ -177,7 +178,7 @@ export default function BookingScreen() {
       await createCoachingBooking(db, selectedSlot.id, clientNotes);
       setSelectedSlot(null);
       await load();
-      Alert.alert(hu.screens.booking.bookTitle, hu.screens.booking.booked);
+      notify(hu.screens.booking.bookTitle, hu.screens.booking.booked);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -186,28 +187,28 @@ export default function BookingScreen() {
   };
 
   const cancelBooking = (booking: CoachingBooking): void => {
-    Alert.alert(hu.screens.booking.cancelBooking, hu.screens.booking.cancelConfirm, [
-      { text: hu.common.cancel, style: 'cancel' },
-      {
-        text: hu.screens.booking.cancelBooking,
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            setBusy(true);
-            try {
-              const db = await getDatabase();
-              await cancelCoachingBooking(db, booking.id);
-              await load();
-              Alert.alert(hu.screens.booking.bookTitle, hu.screens.booking.cancelled);
-            } catch (cause: unknown) {
-              setError(cause instanceof Error ? cause.message : String(cause));
-            } finally {
-              setBusy(false);
-            }
-          })();
-        },
+    confirm({
+      title: hu.screens.booking.cancelBooking,
+      message: hu.screens.booking.cancelConfirm,
+      confirmLabel: hu.screens.booking.cancelBooking,
+      cancelLabel: hu.common.cancel,
+      destructive: true,
+      onConfirm: () => {
+        void (async () => {
+          setBusy(true);
+          try {
+            const db = await getDatabase();
+            await cancelCoachingBooking(db, booking.id);
+            await load();
+            notify(hu.screens.booking.bookTitle, hu.screens.booking.cancelled);
+          } catch (cause: unknown) {
+            setError(cause instanceof Error ? cause.message : String(cause));
+          } finally {
+            setBusy(false);
+          }
+        })();
       },
-    ]);
+    });
   };
 
   if (slots === null) {

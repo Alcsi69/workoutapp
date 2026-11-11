@@ -156,7 +156,7 @@ export function PlateCalculatorModal({
             </Text>
           ) : null}
 
-          <Button label={hu.plate.close} variant="secondary" onPress={onClose} />
+          <Button label={hu.plate.close} variant="ghost" onPress={onClose} />
           </ScrollView>
         </View>
       </View>

@@ -1,0 +1,35 @@
+{
+  "name": "WorkoutApp",
+  "short_name": "WorkoutApp",
+  "description": "Strukturált erő- és futóedzés, a térd- és ízületi terhelést figyelembe véve.",
+  "lang": "hu",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "theme_color": "#131112",
+  "background_color": "#131112",
+  "categories": ["health", "fitness", "sports"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

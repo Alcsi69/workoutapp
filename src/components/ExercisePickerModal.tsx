@@ -356,7 +356,7 @@ export function ExercisePickerModal({
           />
           <Button
             label={hu.picker.customCancel}
-            variant="secondary"
+            variant="ghost"
             onPress={() => {
               setCreating(false);
               resetForm();
