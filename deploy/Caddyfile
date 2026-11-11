@@ -39,12 +39,11 @@ alexercise.app, www.alexercise.app {
 api.alexercise.app {
 	encode zstd gzip
 
-	reverse_proxy 127.0.0.1:4000 {
-		# Full session logs travel in the sync payload.
-		request_body {
-			max_size 10MB
-		}
+	request_body {
+		max_size 10MB
 	}
+
+	reverse_proxy 127.0.0.1:4000 
 
 	header {
 		-Server
