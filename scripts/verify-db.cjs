@@ -1109,6 +1109,14 @@ async function main() {
     assert.equal(batch.sessions.length, dirtyPayload.length);
   });
 
+  // Sync only ever runs for a logged-in device, so the sync checks below need a
+  // local session (the token is attached to every push/pull request).
+  await repository.saveLocalAuthSession(db, {
+    userId: repository.USER_PROFILE_ID,
+    username: 'teszt.felhasznalo',
+    token: 'test-token-0123456789',
+  });
+
   await check('syncPendingWorkouts without an endpoint stays a local dry run', async () => {
     const result = await syncPendingWorkouts(db);
     assert.equal(result.mode, 'dry_run');
@@ -1156,9 +1164,16 @@ async function main() {
       assert.equal(result.syncedSessionIds.length, dirtyPayload.length);
       assert.equal(calls.length, 2);
       assert.ok(calls[0].url.endsWith('/sync/push'), 'first leg is the push');
-      assert.ok(
-        calls[1].url.includes('/sync/pull?userId=usr_local'),
-        'second leg is the pull',
+      assert.ok(calls[1].url.endsWith('/sync/pull'), 'second leg is the pull');
+      assert.equal(
+        calls[0].init.headers.Authorization,
+        'Bearer test-token-0123456789',
+        'the push carries the bearer token',
+      );
+      assert.equal(
+        calls[1].init.headers.Authorization,
+        'Bearer test-token-0123456789',
+        'the pull carries the bearer token',
       );
       const sent = JSON.parse(calls[0].init.body);
       assert.equal(sent.sessions.length, dirtyPayload.length);
@@ -1204,8 +1219,13 @@ async function main() {
       assert.equal(calls.length, 1, 'a pull runs a single GET');
       assert.equal(
         calls[0].url,
-        'https://api.example.test/api/sync/pull?userId=usr_local',
+        'https://api.example.test/api/sync/pull',
         'the pull path is joined under the configured API base',
+      );
+      assert.equal(
+        calls[0].init.headers.Authorization,
+        'Bearer test-token-0123456789',
+        'the pull never goes out unauthenticated',
       );
     } finally {
       globalThis.fetch = previousFetch;

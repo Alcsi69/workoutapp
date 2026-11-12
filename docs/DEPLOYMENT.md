@@ -264,14 +264,37 @@ The web bundle calls `https://api.alexercise.app/api` from the browser, so the A
 must answer preflights (`OPTIONS`) with an `Access-Control-Allow-Origin` echoing
 `https://alexercise.app`. `server/src/app.ts` does this for the origins listed in
 `CORS_ORIGINS` (set in `server/docker-compose.yml`, defaults include
-`https://alexercise.app` and `https://www.alexercise.app`). Verify after deploy:
+`https://alexercise.app` and `https://www.alexercise.app`). `Authorization` is an
+allowed request header (client sync sends `Bearer <token>`). Verify after deploy:
 
 ```bash
 curl -i -X OPTIONS https://api.alexercise.app/api/sync/push \
   -H 'Origin: https://alexercise.app' \
   -H 'Access-Control-Request-Method: POST' \
-  -H 'Access-Control-Request-Headers: content-type'
+  -H 'Access-Control-Request-Headers: content-type,authorization'
 # expect: HTTP/2 204 + access-control-allow-origin: https://alexercise.app
+```
+
+### 9.2.1 Auth on the API
+
+Every client endpoint (`/api/sync/*`, `/api/auth/*` aside from register/login) and
+every coach admin endpoint (`/api/admin/*`) requires a bearer token; anything else
+answers `401`. Two separate secrets exist:
+
+| Secret | Header | Who uses it |
+| --- | --- | --- |
+| Per-user token from `/api/auth/login` \| `register` | `Authorization: Bearer <token>` | The app (client sync) |
+| Coach admin token | `Authorization: Bearer <token>` | The `/admin` web |
+
+Set `ADMIN_TOKEN` in the container environment for a stable coach token. When it is
+unset the server generates a random one per boot and prints it (`Admin token …` in
+the logs, also in the startup banner); the admin web asks for it once and stores it
+in `localStorage`. Set it explicitly in production so the token survives restarts.
+
+```bash
+# Health is public; user data is not.
+curl -s -o /dev/null -w '%{http_code}\n' https://api.alexercise.app/api/sync/pull   # 401
+curl -s -o /dev/null -w '%{http_code}\n' https://api.alexercise.app/api/admin/clients  # 401
 ```
 
 ### 9.3 Caddyfile (static SPA + PWA headers)

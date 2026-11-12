@@ -1,15 +1,15 @@
 /**
- * End-to-end verification of the Phase 7B coach platform.
+ * End-to-end verification of the coach platform and its auth model.
  *
  * Boots the real `/server` HTTP API on an ephemeral port against an in-memory
  * `node:sqlite` database, then drives it exactly as production would:
  *
- *   1. simulate a mobile client (real mobile modules, compiled to .verify-build)
- *      pushing onboarding + billing + a completed workout + a booking request,
- *   2. simulate the coach confirming the booking and assigning a custom plan +
- *      publishing new slots through the admin REST API,
- *   3. pull the coach state and verify `applyClientSyncPullPayload` hydrates the
- *      client's SQLite database accurately.
+ *   0. auth gate — every sync/user-data and admin endpoint answers 401 without a
+ *      valid bearer token,
+ *   1. registers User A, pushes A's profile + billing + workout + booking,
+ *   2. drives the coach admin surface (with the admin token) and pulls as A,
+ *   3. registers User B and proves multi-tenant isolation: B only ever sees B's
+ *      rows, and a fresh client only ever hydrates from its own account.
  *
  * Run: npm run verify:server  (builds .verify-build + server/dist first)
  */
@@ -25,8 +25,9 @@ const { migrate, SCHEMA_VERSION } = require('../.verify-build/db/schema.js');
 const { seedExerciseCatalog } = require('../.verify-build/db/seed.js');
 const { EXERCISE_CATALOG } = require('../.verify-build/db/catalogData.js');
 const repository = require('../.verify-build/db/repository.js');
-const { buildClientSyncPushPayload } = require('../.verify-build/services/syncService.js');
+const syncService = require('../.verify-build/services/syncService.js');
 const authService = require('../.verify-build/services/authService.js');
+const { buildClientSyncPushPayload } = syncService;
 
 /** Thin async facade over node:sqlite matching the expo-sqlite API surface. */
 function createMobileDatabase() {
@@ -60,6 +61,14 @@ function createMobileDatabase() {
   return { db, raw };
 }
 
+/** Fresh, migrated, catalog-seeded client database (as a brand-new device is). */
+async function createFreshClientDatabase() {
+  const handle = createMobileDatabase();
+  await migrate(handle.db);
+  await seedExerciseCatalog(handle.db);
+  return handle;
+}
+
 const checks = [];
 async function check(name, fn) {
   try {
@@ -72,7 +81,7 @@ async function check(name, fn) {
   }
 }
 
-/** Minimal JSON fetch helper returning { status, json } or { status, text }. */
+/** Minimal JSON fetch helper returning { status, body, contentType }. */
 async function http(url, options = {}) {
   const response = await fetch(url, options);
   const contentType = response.headers.get('content-type') ?? '';
@@ -81,9 +90,15 @@ async function http(url, options = {}) {
   return { status: response.status, body, contentType };
 }
 
+/** Bearer header for a client account or the coach admin. */
+function bearer(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
 async function main() {
   const server = await startCoachServer({ dbPath: ':memory:', port: 0, host: '127.0.0.1' });
   const apiBase = server.url;
+  const adminAuth = bearer(server.adminToken);
   const adminHtml = await http(`${apiBase}/admin`);
 
   const { db, raw } = createMobileDatabase();
@@ -104,8 +119,60 @@ async function main() {
     assert.ok(String(adminHtml.body).includes('Edzői Admin'));
   });
 
-  // --- 1. Simulate a mobile client pushing its whole state ------------------
-  console.log('\nmobile client push');
+  // --- 0. Auth gate: nothing user-related answers without a token ----------
+  console.log('\nauth gate');
+
+  await check('unauthenticated GET /api/sync/pull is rejected with 401', async () => {
+    const res = await http(`${apiBase}/api/sync/pull`);
+    assert.equal(res.status, 401);
+  });
+
+  await check('unauthenticated GET /api/sync/pull with ?userId= is still 401', async () => {
+    const res = await http(`${apiBase}/api/sync/pull?userId=${repository.USER_PROFILE_ID}`);
+    assert.equal(res.status, 401);
+  });
+
+  await check('unauthenticated POST /api/sync/push is rejected with 401', async () => {
+    const res = await http(`${apiBase}/api/sync/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: { userId: repository.USER_PROFILE_ID, locale: 'hu' } }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  await check('an unknown bearer token is rejected with 401', async () => {
+    const res = await http(`${apiBase}/api/sync/pull`, { headers: bearer('not-a-real-token') });
+    assert.equal(res.status, 401);
+  });
+
+  await check('unauthenticated admin API is rejected with 401', async () => {
+    const res = await http(`${apiBase}/api/admin/clients`);
+    assert.equal(res.status, 401);
+  });
+
+  await check('admin API rejects a wrong admin token', async () => {
+    const res = await http(`${apiBase}/api/admin/clients`, { headers: bearer('wrong-admin') });
+    assert.equal(res.status, 401);
+  });
+
+  // --- 1. User A: register, then push its whole state ----------------------
+  console.log('\nuser A: register + push');
+
+  const accountUsername = 'Anna.Kovacs';
+  const accountPassword = 'titkos-jelszo-123';
+  const billingProfile = {
+    userId: repository.USER_PROFILE_ID,
+    fullName: 'Kovács Anna',
+    email: 'anna@example.com',
+    phone: '+36 30 123 4567',
+    billingName: 'Kovács Anna',
+    billingCountry: 'Magyarország',
+    billingZip: '1052',
+    billingCity: 'Budapest',
+    billingAddress: 'Váci utca 12.',
+    taxNumber: '12345678-1-42',
+  };
 
   const onboarding = {
     userId: repository.USER_PROFILE_ID,
@@ -128,21 +195,34 @@ async function main() {
       preferredSubstitutions: { hack_squat: 'belt_squat' },
     },
   };
-  await repository.saveOnboardingPayload(db, onboarding);
-  await repository.saveClientBillingProfile(db, {
-    userId: repository.USER_PROFILE_ID,
-    fullName: 'Kovács Anna',
-    email: 'anna@example.com',
-    phone: '+36 30 123 4567',
-    billingName: 'Kovács Anna',
-    billingCountry: 'Magyarország',
-    billingZip: '1052',
-    billingCity: 'Budapest',
-    billingAddress: 'Váci utca 12.',
-    taxNumber: '12345678-1-42',
+
+  const registered = await http(`${apiBase}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: accountUsername,
+      password: accountPassword,
+      userId: repository.USER_PROFILE_ID,
+      profile: onboarding,
+      billingProfile,
+    }),
+  });
+  const tokenA = registered.body.token;
+  const userA = registered.body.userId;
+
+  await check('POST /api/auth/register secures an existing local profile', () => {
+    assert.equal(registered.status, 201);
+    assert.equal(typeof tokenA, 'string');
+    assert.ok(tokenA.length >= 32);
+    assert.equal(userA, repository.USER_PROFILE_ID);
+    assert.equal(registered.body.username, accountUsername);
+    assert.equal(registered.body.profile.biometrics.weightKg, 78.5);
+    assert.equal(registered.body.billingProfile.billingZip, '1052');
   });
 
-  // Log a real workout from a seeded template.
+  // A real logged workout + a booking request on the client database.
+  await repository.saveOnboardingPayload(db, onboarding);
+  await repository.saveClientBillingProfile(db, billingProfile);
   await repository.seedDefaultTemplates(db);
   const templates = await repository.getWorkoutTemplates(db);
   const strengthTemplate = templates.find((t) => t.sessionType === 'strength');
@@ -158,7 +238,6 @@ async function main() {
   });
   await repository.completeSession(db, sessionId);
 
-  // Request a coaching session.
   await repository.seedCoachingSlots(db);
   const openSlots = await repository.getOpenCoachingSlots(db);
   const booking = await repository.createCoachingBooking(db, openSlots[0].id, 'Technika átnézés.');
@@ -166,13 +245,14 @@ async function main() {
   const pushPayload = await buildClientSyncPushPayload(db);
   const push = await http(`${apiBase}/api/sync/push`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...bearer(tokenA) },
     body: JSON.stringify(pushPayload),
   });
 
-  await check('POST /api/sync/push ingests the client state', () => {
+  await check('POST /api/sync/push (as A) ingests the client state', () => {
     assert.equal(push.status, 200);
     assert.equal(push.body.ok, true);
+    assert.equal(push.body.userId, userA);
     assert.equal(push.body.sessions, pushPayload.sessions.length);
     assert.equal(push.body.bookings, pushPayload.bookings.length);
   });
@@ -187,10 +267,11 @@ async function main() {
   console.log('\ncoach admin actions');
 
   await check('GET /api/admin/clients lists the synced client with billing + biometrics', async () => {
-    const res = await http(`${apiBase}/api/admin/clients`);
+    const res = await http(`${apiBase}/api/admin/clients`, { headers: adminAuth });
     assert.equal(res.status, 200);
-    const client = res.body.clients.find((c) => c.userId === repository.USER_PROFILE_ID);
+    const client = res.body.clients.find((c) => c.userId === userA);
     assert.ok(client !== undefined);
+    assert.equal(client.username, accountUsername);
     assert.equal(client.billing.billingName, 'Kovács Anna');
     assert.equal(client.biometrics.weightKg, 78.5);
     assert.equal(client.jointConstraints[0].area, 'knees');
@@ -198,9 +279,9 @@ async function main() {
   });
 
   await check('GET /api/admin/clients/:id returns the logged session with its exercises, sets and reps', async () => {
-    const res = await http(
-      `${apiBase}/api/admin/clients/${encodeURIComponent(repository.USER_PROFILE_ID)}`,
-    );
+    const res = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}`, {
+      headers: adminAuth,
+    });
     assert.equal(res.status, 200);
     assert.equal(res.body.sessions.length, 1, 'one pushed session');
     const session = res.body.sessions[0];
@@ -218,7 +299,7 @@ async function main() {
   });
 
   await check('GET /api/admin/exercises serves the 157-exercise catalog', async () => {
-    const res = await http(`${apiBase}/api/admin/exercises`);
+    const res = await http(`${apiBase}/api/admin/exercises`, { headers: adminAuth });
     assert.equal(res.status, 200);
     assert.equal(res.body.count, 157);
     assert.equal(res.body.exercises.length, 157);
@@ -227,7 +308,7 @@ async function main() {
   await check('PATCH /api/admin/bookings/:id confirms with coach notes + link', async () => {
     const res = await http(`${apiBase}/api/admin/bookings/${encodeURIComponent(booking.id)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
       body: JSON.stringify({
         status: 'confirmed',
         coachNotes: 'Várunk a teremben, hozz térdvédőt.',
@@ -240,22 +321,19 @@ async function main() {
   });
 
   await check('POST /api/admin/clients/:id/templates assigns a coach plan', async () => {
-    const res = await http(
-      `${apiBase}/api/admin/clients/${encodeURIComponent(repository.USER_PROFILE_ID)}/templates`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: 'Edzői terv – Guggolás fókusz',
-          sessionType: 'strength',
-          coachNote: 'Térdkímélő: alacsony tengelyterhelés.',
-          blocks: [
-            { exerciseId: 'belt_squat', targetSets: 4, targetReps: '8-10', restSeconds: 150 },
-            { exerciseId: 'romanian_deadlift', targetSets: 3, targetReps: '8', restSeconds: 120 },
-          ],
-        }),
-      },
-    );
+    const res = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({
+        title: 'Edzői terv – Guggolás fókusz',
+        sessionType: 'strength',
+        coachNote: 'Térdkímélő: alacsony tengelyterhelés.',
+        blocks: [
+          { exerciseId: 'belt_squat', targetSets: 4, targetReps: '8-10', restSeconds: 150 },
+          { exerciseId: 'romanian_deadlift', targetSets: 3, targetReps: '8', restSeconds: 120 },
+        ],
+      }),
+    });
     assert.equal(res.status, 201);
     assert.equal(res.body.template.source, 'coach');
     assert.equal(res.body.template.exercises.length, 2);
@@ -268,7 +346,7 @@ async function main() {
     const endsAt = new Date(Date.now() + 4 * 86400000 + 45 * 60000).toISOString();
     const res = await http(`${apiBase}/api/admin/slots`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
       body: JSON.stringify({
         startsAt,
         endsAt,
@@ -283,7 +361,8 @@ async function main() {
 
   await check('GET invoice-export returns JSON and CSV billing data', async () => {
     const json = await http(
-      `${apiBase}/api/admin/clients/${encodeURIComponent(repository.USER_PROFILE_ID)}/invoice-export`,
+      `${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/invoice-export`,
+      { headers: adminAuth },
     );
     assert.equal(json.status, 200);
     assert.equal(json.body.billing.billingName, 'Kovács Anna');
@@ -292,7 +371,8 @@ async function main() {
     assert.equal(json.body.sessionCount, 1);
 
     const csv = await http(
-      `${apiBase}/api/admin/clients/${encodeURIComponent(repository.USER_PROFILE_ID)}/invoice-export?format=csv`,
+      `${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/invoice-export?format=csv`,
+      { headers: adminAuth },
     );
     assert.equal(csv.status, 200);
     assert.ok(String(csv.contentType).includes('text/csv'));
@@ -301,16 +381,17 @@ async function main() {
     assert.ok(String(csv.body).includes('1052'));
   });
 
-  // --- 3. Pull + apply on the client ---------------------------------------
-  console.log('\nclient pull + apply');
+  // --- 3. Pull as A + apply on the client ----------------------------------
+  console.log('\nuser A: pull + apply');
 
-  const pull = await http(
-    `${apiBase}/api/sync/pull?userId=${encodeURIComponent(repository.USER_PROFILE_ID)}`,
-  );
+  const pull = await http(`${apiBase}/api/sync/pull?userId=someone_else`, {
+    headers: bearer(tokenA),
+  });
 
-  await check('GET /api/sync/pull returns the coach assignments, bookings and slots', () => {
+  await check('GET /api/sync/pull (as A) returns assignments, bookings and slots', () => {
     assert.equal(pull.status, 200);
-    assert.equal(pull.body.userId, repository.USER_PROFILE_ID);
+    // The query parameter is ignored: the token decides who the caller is.
+    assert.equal(pull.body.userId, userA);
     assert.ok(pull.body.templates.length >= 1);
     assert.equal(pull.body.templates[0].source, 'coach');
     assert.ok(pull.body.bookings.some((b) => b.id === booking.id && b.status === 'confirmed'));
@@ -348,67 +429,167 @@ async function main() {
     assert.equal(raw.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
   });
 
-  // --- 4. Phase 7D: username + password accounts ---------------------------
-  console.log('\nauthentication');
+  // --- 4. Multi-tenant isolation: User B must never see User A --------------
+  console.log('\nmulti-tenant isolation');
 
-  const billingProfile = {
-    userId: repository.USER_PROFILE_ID,
-    fullName: 'Kovács Anna',
-    email: 'anna@example.com',
-    phone: '+36 30 123 4567',
-    billingName: 'Kovács Anna',
-    billingCountry: 'Magyarország',
-    billingZip: '1052',
-    billingCity: 'Budapest',
-    billingAddress: 'Váci utca 12.',
-    taxNumber: '12345678-1-42',
+  const userBUsername = 'user.b';
+  const userBPassword = 'b-jelszo-1234';
+  const userBProfile = {
+    ...onboarding,
+    userId: 'ignored_by_server',
+    biometrics: { age: 41, weightKg: 70, heightCm: 172 },
+    constraints: {
+      jointLimitations: [],
+      excludedExerciseIds: [],
+      preferredSubstitutions: {},
+    },
   };
-  const accountUsername = 'Anna.Kovacs';
-  const accountPassword = 'titkos-jelszo-123';
 
-  const registered = await http(`${apiBase}/api/auth/register`, {
+  const registeredB = await http(`${apiBase}/api/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      username: accountUsername,
-      password: accountPassword,
-      userId: repository.USER_PROFILE_ID,
-      profile: onboarding,
-      billingProfile,
+      username: userBUsername,
+      password: userBPassword,
+      profile: userBProfile,
+    }),
+  });
+  const tokenB = registeredB.body.token;
+  const userB = registeredB.body.userId;
+
+  await check('User B gets its own server-generated id', () => {
+    assert.equal(registeredB.status, 201);
+    assert.match(userB, /^usr_/);
+    assert.notEqual(userB, userA);
+    assert.equal(registeredB.body.profile.userId, userB);
+    assert.equal(registeredB.body.sessions.length, 0);
+  });
+
+  const beltSquat = EXERCISE_CATALOG.find((item) => item.id === 'belt_squat');
+  const nowIso = new Date().toISOString();
+  const userBSession = {
+    id: 'sess_b_1',
+    sessionType: 'strength',
+    title: 'B edzés',
+    startedAt: nowIso,
+    completedAt: nowIso,
+    syncStatus: 'synced',
+    exerciseBlocks: [
+      {
+        id: 'sess_b_1:0',
+        sessionId: 'sess_b_1',
+        orderIndex: 0,
+        exerciseId: 'belt_squat',
+        restSeconds: 120,
+        exercise: beltSquat,
+        sets: [
+          {
+            id: 'set_b_1',
+            setNumber: 1,
+            setType: 'working',
+            targetReps: '8-10',
+            actualWeightKg: 60,
+            actualReps: 10,
+            completedAt: nowIso,
+          },
+        ],
+      },
+    ],
+  };
+
+  const pushB = await http(`${apiBase}/api/sync/push`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...bearer(tokenB) },
+    body: JSON.stringify({
+      batchId: 'sync_b',
+      generatedAt: nowIso,
+      deviceId: userB,
+      profile: userBProfile,
+      billingProfile: null,
+      sessions: [userBSession],
+      bookings: [],
     }),
   });
 
-  await check('POST /api/auth/register secures an existing profile (upgrade path)', () => {
-    assert.equal(registered.status, 201);
-    assert.equal(typeof registered.body.token, 'string');
-    assert.ok(registered.body.token.length >= 32);
-    assert.equal(registered.body.userId, repository.USER_PROFILE_ID);
-    assert.equal(registered.body.username, accountUsername);
-    assert.equal(registered.body.profile.biometrics.weightKg, 78.5);
-    assert.equal(registered.body.billingProfile.billingZip, '1052');
-    assert.equal(registered.body.sessions.length, 1);
+  await check('POST /api/sync/push (as B) stores only B rows', () => {
+    assert.equal(pushB.status, 200);
+    assert.equal(pushB.body.userId, userB);
+    assert.equal(pushB.body.sessions, 1);
   });
 
-  await check('POST /api/auth/register creates a brand-new account with its own id', async () => {
-    const res = await http(`${apiBase}/api/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'uj.futas',
-        password: 'futas-1234',
-        profile: {
-          ...onboarding,
-          userId: 'ignored_local',
-          biometrics: { age: 41, weightKg: 70, heightCm: 172 },
-        },
-      }),
-    });
-    assert.equal(res.status, 201);
-    assert.notEqual(res.body.userId, repository.USER_PROFILE_ID);
-    assert.match(res.body.userId, /^usr_/);
-    assert.equal(res.body.profile.userId, res.body.userId);
-    assert.equal(res.body.profile.biometrics.age, 41);
+  const pullB = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenB) });
+
+  await check('B pull returns ONLY B profile, sessions and no A data', () => {
+    assert.equal(pullB.status, 200);
+    assert.equal(pullB.body.userId, userB);
+    assert.equal(pullB.body.profile.userId, userB);
+    assert.equal(pullB.body.profile.biometrics.weightKg, 70);
+    assert.equal(pullB.body.sessions.length, 1);
+    assert.equal(pullB.body.sessions[0].id, 'sess_b_1');
+    assert.ok(
+      !pullB.body.sessions.some((s) => s.id === sessionId),
+      'A session must not appear in B pull',
+    );
+    assert.equal(pullB.body.billingProfile, null);
+    assert.equal(pullB.body.templates.length, 0);
+    assert.equal(pullB.body.bookings.length, 0);
   });
+
+  const pullA2 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenA) });
+
+  await check('A pull still returns only A data after B registered', () => {
+    assert.equal(pullA2.body.userId, userA);
+    assert.equal(pullA2.body.profile.biometrics.weightKg, 78.5);
+    assert.equal(pullA2.body.sessions.length, 1);
+    assert.equal(pullA2.body.sessions[0].id, sessionId);
+    assert.ok(
+      !pullA2.body.sessions.some((s) => s.id === 'sess_b_1'),
+      'B session must not appear in A pull',
+    );
+    assert.equal(pullA2.body.billingProfile.billingZip, '1052');
+    assert.ok(pullA2.body.templates.some((t) => t.source === 'coach'));
+  });
+
+  await check('a fresh client logging in as B hydrates only B data', async () => {
+    const fresh = await createFreshClientDatabase();
+    try {
+      await repository.saveLocalAuthSession(fresh.db, {
+        userId: userB,
+        username: userBUsername,
+        token: tokenB,
+      });
+      await repository.applyClientSyncPullPayload(fresh.db, pullB.body);
+
+      const profile = await repository.getUserProfile(fresh.db);
+      assert.ok(profile !== null);
+      assert.equal(profile.userId, userB);
+      assert.equal(profile.biometrics.weightKg, 70);
+
+      const history = await repository.getSessionHistory(fresh.db);
+      assert.equal(history.length, 1);
+      assert.equal(history[0].id, 'sess_b_1');
+
+      const billing = await repository.getClientBillingProfile(fresh.db);
+      assert.equal(billing, null);
+    } finally {
+      fresh.raw.close();
+    }
+  });
+
+  await check('a pull response for another user is a local no-op', async () => {
+    const fresh = await createFreshClientDatabase();
+    try {
+      // No session → the active owner is the legacy local id, which is not B.
+      await repository.applyClientSyncPullPayload(fresh.db, pullB.body);
+      const profile = await repository.getUserProfile(fresh.db);
+      assert.equal(profile, null);
+    } finally {
+      fresh.raw.close();
+    }
+  });
+
+  // --- 5. Auth behaviour ----------------------------------------------------
+  console.log('\nauthentication behaviour');
 
   await check('POST /api/auth/register rejects a duplicate username (case-insensitive)', async () => {
     const res = await http(`${apiBase}/api/auth/register`, {
@@ -420,14 +601,14 @@ async function main() {
     assert.ok(String(res.body.error).includes('foglalt'));
   });
 
-  await check('POST /api/auth/login accepts trimmed, case-insensitive username', async () => {
+  await check('POST /api/auth/login accepts a trimmed, case-insensitive username', async () => {
     const res = await http(`${apiBase}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: '  ANNA.KOVACS ', password: accountPassword }),
     });
     assert.equal(res.status, 200);
-    assert.equal(res.body.userId, repository.USER_PROFILE_ID);
+    assert.equal(res.body.userId, userA);
     assert.equal(res.body.profile.biometrics.weightKg, 78.5);
     assert.equal(res.body.billingProfile.billingZip, '1052');
     assert.equal(res.body.sessions.length, 1);
@@ -444,32 +625,10 @@ async function main() {
     assert.ok(String(res.body.error).includes('Hibás'));
   });
 
-  await check('authenticated pull is scoped to the token user', async () => {
-    const res = await http(`${apiBase}/api/sync/pull?userId=someone_else`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${registered.body.token}` },
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.userId, repository.USER_PROFILE_ID);
-    assert.equal(res.body.profile.biometrics.weightKg, 78.5);
-    assert.equal(res.body.sessions.length, 1);
-  });
-
-  await check('an invalid bearer token is rejected with 401', async () => {
-    const res = await http(`${apiBase}/api/sync/pull?userId=${repository.USER_PROFILE_ID}`, {
-      method: 'GET',
-      headers: { Authorization: 'Bearer not-a-real-token' },
-    });
-    assert.equal(res.status, 401);
-  });
-
   await check('authenticated push ignores a spoofed body userId', async () => {
     const res = await http(`${apiBase}/api/sync/push`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${registered.body.token}`,
-      },
+      headers: { 'Content-Type': 'application/json', ...bearer(tokenA) },
       body: JSON.stringify({
         ...pushPayload,
         deviceId: 'spoofed_device',
@@ -477,30 +636,25 @@ async function main() {
       }),
     });
     assert.equal(res.status, 200);
-    assert.equal(res.body.userId, repository.USER_PROFILE_ID);
-    const spoofed = await http(`${apiBase}/api/admin/clients/spoofed_user`);
+    assert.equal(res.body.userId, userA);
+    const spoofed = await http(`${apiBase}/api/admin/clients/spoofed_user`, { headers: adminAuth });
     assert.equal(spoofed.status, 404);
   });
 
   await check('cross-device login restores profile, billing and workout logs', async () => {
-    const second = createMobileDatabase();
+    const second = await createFreshClientDatabase();
     try {
-      await migrate(second.db);
-      await seedExerciseCatalog(second.db);
-
       const state = await authService.loginWithCredentials(
         second.db,
         { username: accountUsername, password: accountPassword },
         `${apiBase}/api`,
       );
-      assert.equal(state.userId, repository.USER_PROFILE_ID);
+      assert.equal(state.userId, userA);
 
-      // Session persisted locally for subsequent authenticated push/pull.
       const session = await repository.getLocalAuthSession(second.db);
       assert.ok(session !== null);
       assert.equal(session.username, accountUsername);
 
-      // Onboarding profile + constraints restored — no re-onboarding needed.
       const profile = await repository.getUserProfile(second.db);
       assert.ok(profile !== null);
       assert.equal(profile.biometrics.weightKg, 78.5);
@@ -510,20 +664,32 @@ async function main() {
       assert.equal(billing.billingZip, '1052');
       assert.equal(billing.taxNumber, '12345678-1-42');
 
-      // Workout history restored with its logged set.
       const history = await repository.getSessionHistory(second.db);
       assert.equal(history.length, 1);
-      const detail = await repository.getSessionDetail(second.db, history[0].id);
-      assert.ok(detail !== null);
-      assert.equal(detail.exerciseBlocks[0].sets[0].actualWeightKg, 90);
-      assert.equal(detail.exerciseBlocks[0].sets[0].actualReps, 8);
+      const sessionDetail = await repository.getSessionDetail(second.db, history[0].id);
+      assert.ok(sessionDetail !== null);
+      assert.equal(sessionDetail.exerciseBlocks[0].sets[0].actualWeightKg, 90);
+      assert.equal(sessionDetail.exerciseBlocks[0].sets[0].actualReps, 8);
 
-      // The tailored program is regenerated and the coach plan came back.
-      const templates = await repository.getWorkoutTemplates(second.db);
-      assert.ok(templates.length >= 1);
-      assert.ok(templates.some((template) => template.source === 'coach'));
+      const restoredTemplates = await repository.getWorkoutTemplates(second.db);
+      assert.ok(restoredTemplates.some((template) => template.source === 'coach'));
     } finally {
       second.raw.close();
+    }
+  });
+
+  await check('unauthenticated device never syncs: pull is skipped without a token', async () => {
+    const fresh = await createFreshClientDatabase();
+    try {
+      const result = await syncService.syncPull(fresh.db, `${apiBase}/api`);
+      assert.equal(result.ok, false);
+      assert.equal(result.appliedTemplateCount, 0);
+      assert.equal(result.appliedBookingCount, 0);
+      assert.ok(typeof result.error === 'string' && result.error.length > 0);
+      const profile = await repository.getUserProfile(fresh.db);
+      assert.equal(profile, null, 'no remote data may hydrate an unauthenticated device');
+    } finally {
+      fresh.raw.close();
     }
   });
 

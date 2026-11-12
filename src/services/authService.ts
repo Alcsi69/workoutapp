@@ -20,6 +20,7 @@ import type {
 import hu from '../i18n/hu';
 import {
   clearLocalAuthSession,
+  getActiveUserId,
   getClientBillingProfile,
   getLocalAuthSession,
   getSyncServerUrl,
@@ -241,6 +242,19 @@ export async function loginWithCredentials(
   if (state.profile === null) {
     // Credentials exist but no onboarding snapshot was ever synced.
     throw new Error(hu.account.errors.noProfile);
+  }
+
+  // Never let one account's local rows mix into another's session: wipe the
+  // device whenever the incoming account differs from the local owner (a real
+  // account switch, or leftover pre-auth data belonging to a different id).
+  const previousSession = await getLocalAuthSession(db);
+  const localOwner = await getActiveUserId(db);
+  const switchingAccount =
+    previousSession !== null
+      ? previousSession.userId !== state.userId
+      : localOwner !== state.userId && (await getUserProfile(db)) !== null;
+  if (switchingAccount) {
+    await wipeLocalUserData(db);
   }
 
   await saveLocalAuthSession(db, {

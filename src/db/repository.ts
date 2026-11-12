@@ -2454,6 +2454,14 @@ export async function applyClientSyncPullPayload(
 ): Promise<void> {
   const now = new Date().toISOString();
 
+  // Defence in depth: a pull response is only ever applied to the account that
+  // requested it. If the ids disagree, nothing is written — a misrouted response
+  // can never overwrite (or hydrate) another user's local data.
+  const activeUserId = await getActiveUserId(db);
+  if (payload.userId !== activeUserId) {
+    return;
+  }
+
   await db.withTransactionAsync(async () => {
     // --- 1. Coach templates -------------------------------------------------
     const incomingIds = new Set(payload.templates.map((template) => template.id));

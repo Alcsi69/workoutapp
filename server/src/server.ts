@@ -5,7 +5,7 @@
 import { createServer, type Server } from 'node:http';
 import { resolve } from 'node:path';
 import { openServerDatabase, type ServerDb } from './db';
-import { createApp } from './app';
+import { createApp, resolveAdminToken } from './app';
 
 /** Repo layout: compiled file lives at server/dist/server/src/, so `..`x3 = server/. */
 const SERVER_ROOT = resolve(__dirname, '..', '..', '..');
@@ -17,6 +17,8 @@ export interface StartOptions {
   host?: string;
   /** Static admin web directory; pass `null` to disable /admin. */
   adminDir?: string | null;
+  /** Coach admin token; falls back to `ADMIN_TOKEN` or a random per-boot value. */
+  adminToken?: string | null;
 }
 
 export interface CoachServer {
@@ -24,6 +26,8 @@ export interface CoachServer {
   server: Server;
   port: number;
   url: string;
+  /** Token required by every `/api/admin/*` call. */
+  adminToken: string;
   close(): Promise<void>;
 }
 
@@ -45,7 +49,8 @@ export function startCoachServer(options: StartOptions = {}): Promise<CoachServe
   const dbPath = options.dbPath ?? defaultDbPath();
   const db = openServerDatabase(dbPath);
   const adminDir = options.adminDir === undefined ? defaultAdminDir() : options.adminDir;
-  const handler = createApp(db, { adminDir });
+  const adminToken = resolveAdminToken(options.adminToken);
+  const handler = createApp(db, { adminDir, adminToken });
   const server = createServer(handler);
 
   return new Promise<CoachServer>((resolveListen, rejectListen) => {
@@ -59,6 +64,7 @@ export function startCoachServer(options: StartOptions = {}): Promise<CoachServe
         server,
         port,
         url: `http://localhost:${port}`,
+        adminToken,
         close: () =>
           new Promise<void>((resolveClose) => {
             server.close(() => {

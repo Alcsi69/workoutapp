@@ -16,6 +16,9 @@ async function main(): Promise<void> {
   console.log(`  API     : ${server.url}/api`);
   console.log(`  Admin   : ${server.url}/admin  (0.0.0.0:${server.port})`);
   console.log(`  Adatbázis: ${defaultDbPath()}`);
+  if (process.env.ADMIN_TOKEN === undefined || process.env.ADMIN_TOKEN.trim().length === 0) {
+    console.log(`  Admin token (ADMIN_TOKEN nincs beállítva): ${server.adminToken}`);
+  }
 
   const shutdown = (): void => {
     void server.close().then(() => process.exit(0));

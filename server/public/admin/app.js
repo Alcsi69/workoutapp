@@ -18,6 +18,25 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+// The admin API is token-gated; the token is pasted once and kept in localStorage.
+const ADMIN_TOKEN_KEY = 'workoutapp.adminToken';
+
+function adminToken() {
+  try {
+    return window.localStorage.getItem(ADMIN_TOKEN_KEY) || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+function setAdminToken(value) {
+  try {
+    window.localStorage.setItem(ADMIN_TOKEN_KEY, value);
+  } catch (_e) {
+    /* private mode: the token stays in memory for this call only */
+  }
+}
+
 function esc(value) {
   return String(value === null || value === undefined ? '' : value)
     .replace(/&/g, '&amp;')
@@ -27,8 +46,25 @@ function esc(value) {
     .replace(/'/g, '&#39;');
 }
 
-async function api(path, options) {
-  const response = await fetch(path, options);
+async function api(path, options, retried) {
+  const opts = Object.assign({}, options);
+  const headers = Object.assign({}, opts.headers);
+  const token = adminToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  opts.headers = headers;
+
+  const response = await fetch(path, opts);
+
+  // The admin API requires the coach token. Ask for it once and retry so the
+  // portal works without a build step or a login screen.
+  if (response.status === 401 && retried !== true) {
+    const entered = window.prompt('Edzői admin token szükséges:', token || '');
+    if (entered && entered.trim()) {
+      setAdminToken(entered.trim());
+      return api(path, options, true);
+    }
+  }
+
   const contentType = response.headers.get('content-type') || '';
   if (!response.ok) {
     let message = `HTTP ${response.status}`;

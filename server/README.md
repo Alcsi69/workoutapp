@@ -53,16 +53,21 @@ logs, coach plans/bookings/slots).
 
 ### Client sync
 
-Send `Authorization: Bearer <token>` to scope the request to the authenticated
-account. Requests without the header keep working for installations that have
-not created an account yet (legacy `userId`/`deviceId` path).
+Send `Authorization: Bearer <token>` (from `/api/auth/login`) on every call. The
+token is the ONLY source of the caller's identity: a `userId` in the body or query
+string is ignored, and requests without a valid token are rejected with `401`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/sync/push` | Ingest the client's onboarding profile, billing record, dirty sessions and bookings. The token's user id wins over any body `userId`. |
-| `GET` | `/api/sync/pull?userId=…` | Return the coach's assignments plus the account snapshot (profile, billing, workout logs) so a fresh device/PWA can restore itself. |
+| `POST` | `/api/sync/push` | Ingest the client's onboarding profile, billing record, dirty sessions and bookings, scoped to the token's user. |
+| `GET` | `/api/sync/pull` | Return the coach's assignments plus the account snapshot (profile, billing, workout logs) for the token's user. |
 
 ### Coach admin
+
+Every `/api/admin/*` call requires `Authorization: Bearer <ADMIN_TOKEN>` (a random
+per-boot token is generated and logged when the env var is unset); the admin web
+prompts for it once and keeps it in `localStorage`. The static `/admin` page itself
+is public but renders nothing useful without the token.
 
 | Method | Path | Purpose |
 | --- | --- | --- |

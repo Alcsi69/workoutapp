@@ -21,8 +21,8 @@ import type {
   CoachSyncPullResponse,
   SyncBatchPayload,
 } from '../types/workout';
+import hu from '../i18n/hu';
 import {
-  getActiveUserId,
   getLocalAuthSession,
   USER_PROFILE_ID,
   applyClientSyncPullPayload,
@@ -32,6 +32,7 @@ import {
   getUserProfile,
   markCoachingBookingsSynced,
   markSessionsSynced,
+  type LocalAuthSession,
 } from '../db/repository';
 
 export type SyncMode = 'dry_run' | 'remote' | 'noop';
@@ -137,6 +138,19 @@ async function authHeaders(db: SQLiteDatabase): Promise<Record<string, string>> 
 }
 
 /**
+ * The sync legs refuse to touch the backend without a login: an unauthenticated
+ * device must never download (or upload) another account's data. Returns the
+ * session so callers can reuse the token.
+ */
+async function requireSession(db: SQLiteDatabase): Promise<LocalAuthSession> {
+  const session = await getLocalAuthSession(db);
+  if (session === null) {
+    throw new Error(hu.sync.loginRequired);
+  }
+  return session;
+}
+
+/**
  * Builds the outgoing batch: a fresh batchId/generatedAt envelope wrapping every
  * locally dirty session's full nested graph. Feed this to the Szinkronizálás
  * preview modal to inspect the exact JSON on device.
@@ -203,6 +217,9 @@ export async function syncPush(
   db: SQLiteDatabase,
   baseUrl?: string | null,
 ): Promise<SyncPushResult> {
+  // Never talk to the backend unauthenticated — a logged-out device must not be
+  // able to upload into (or read) another account's scope.
+  await requireSession(db);
   const url = normalizeBaseUrl(baseUrl);
   const payload = await buildClientSyncPushPayload(db);
   const base = {
@@ -284,17 +301,23 @@ export async function syncPull(
     return skipped;
   }
 
+  // No local session → no pull. This is what keeps a fresh browser from being
+  // auto-filled with (and marking onboarding complete from) someone else's data.
+  const session = await getLocalAuthSession(db);
+  if (session === null) {
+    return { ...skipped, error: hu.sync.loginRequired };
+  }
+
   const doFetch = getFetch();
   if (doFetch === null) {
     return { ...skipped, error: 'A hálózati kliens nem elérhető.' };
   }
 
   try {
-    const userId = await getActiveUserId(db);
-    const pullResponse = await doFetch(
-      `${url}/sync/pull?userId=${encodeURIComponent(userId)}`,
-      { method: 'GET', headers: { Accept: 'application/json', ...(await authHeaders(db)) } },
-    );
+    const pullResponse = await doFetch(`${url}/sync/pull`, {
+      method: 'GET',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${session.token}` },
+    });
     if (!pullResponse.ok) {
       return { ...skipped, error: `A szerver hibát adott vissza (HTTP ${pullResponse.status}).` };
     }

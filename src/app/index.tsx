@@ -2,15 +2,19 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Redirect } from 'expo-router';
 import { getDatabase } from '../db/client';
-import { getUserProfile } from '../db/repository';
+import { getLocalAuthSession, getUserProfile } from '../db/repository';
 import hu from '../i18n/hu';
 import { colors, spacing, typography } from '../theme/tokens';
 
 type Destination = '/(tabs)' | '/onboarding';
 
 /**
- * Entry gate: runs after the root layout has initialized the database, then
- * routes to onboarding the first time and to the tabs once a profile exists.
+ * Entry gate: runs after the root layout has initialized the database.
+ *
+ * The app only enters the tabs for a device that is BOTH logged in and has a
+ * profile. A fresh browser/device with no auth token always lands on the welcome
+ * screen (onboarding step 1), where the user can log in or register — local or
+ * remotely-pulled data can never auto-complete onboarding.
  */
 export default function Index() {
   const [destination, setDestination] = useState<Destination | null>(null);
@@ -20,10 +24,17 @@ export default function Index() {
     let cancelled = false;
 
     getDatabase()
-      .then((db) => getUserProfile(db))
-      .then((profile) => {
+      .then(async (db) => {
+        const session = await getLocalAuthSession(db);
+        if (session === null) {
+          return { session, profile: null };
+        }
+        const profile = await getUserProfile(db);
+        return { session, profile };
+      })
+      .then(({ session, profile }) => {
         if (!cancelled) {
-          setDestination(profile === null ? '/onboarding' : '/(tabs)');
+          setDestination(session !== null && profile !== null ? '/(tabs)' : '/onboarding');
         }
       })
       .catch((cause: unknown) => {

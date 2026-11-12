@@ -76,3 +76,13 @@ export function verifyPassword(password: string, salt: string, hash: string): bo
 export function createAuthToken(): string {
   return randomBytes(32).toString('hex');
 }
+
+/** Constant-time comparison for two opaque tokens. */
+export function tokensMatch(candidate: string, expected: string): boolean {
+  const left = Buffer.from(candidate, 'utf8');
+  const right = Buffer.from(expected, 'utf8');
+  if (left.length !== right.length || left.length === 0) {
+    return false;
+  }
+  return timingSafeEqual(left, right);
+}

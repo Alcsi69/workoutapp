@@ -508,6 +508,7 @@ const hu = {
     serverUrlReset: 'Alapértelmezett visszaállítva.',
     serverUrlDefault: 'Alapértelmezett',
     pullApplied: 'Az edzői terv és a foglalások frissítve.',
+    loginRequired: 'A szinkronizáláshoz jelentkezz be.',
   },
 
   plate: {

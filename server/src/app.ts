@@ -30,6 +30,7 @@ import {
   createAuthToken,
   hashPassword,
   normalizeUsername,
+  tokensMatch,
   usernameKey,
   validatePassword,
   validateUsername,
@@ -146,6 +147,12 @@ export interface AppOptions {
   /** Absolute path to the static admin web (served at /admin). */
   adminDir?: string | null;
   /**
+   * Secret required as `Authorization: Bearer <token>` on every `/api/admin/*`
+   * call. Resolved from this option, then the `ADMIN_TOKEN` env var; when neither
+   * is set the caller (server.ts) supplies a random per-boot token.
+   */
+  adminToken?: string | null;
+  /**
    * Origins allowed to call the API from a browser. `'*'` disables the allowlist
    * check entirely. Defaults to the production web app + local dev servers;
    * override with the `CORS_ORIGINS` env var (comma-separated).
@@ -178,6 +185,28 @@ function resolveAllowedOrigins(explicit?: string[] | '*' | null): string[] | '*'
       .filter((entry) => entry.length > 0);
   }
   return DEFAULT_ALLOWED_ORIGINS;
+}
+
+/**
+ * Resolves the coach admin token: explicit option, then `ADMIN_TOKEN` from the
+ * environment, else a random per-boot token (logged so the coach can paste it
+ * into the admin web once). The admin API is therefore never left unauthenticated.
+ */
+export function resolveAdminToken(explicit?: string | null): string {
+  if (typeof explicit === 'string' && explicit.trim().length > 0) {
+    return explicit.trim();
+  }
+  const fromEnv = process.env.ADMIN_TOKEN;
+  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
+    return fromEnv.trim();
+  }
+  const generated = createAuthToken();
+  console.warn(
+    '[admin] ADMIN_TOKEN is not set — using a per-boot coach admin token. ' +
+      'Set ADMIN_TOKEN for a stable value. Token:',
+    generated,
+  );
+  return generated;
 }
 
 // --- Small helpers ----------------------------------------------------------
@@ -453,13 +482,14 @@ function issueToken(db: ServerDb, userId: string): string {
 
 /**
  * Resolves the authenticated user id from an `Authorization: Bearer <token>`
- * header. Returns null when no header was sent (legacy pre-auth clients) and
- * throws 401 when a header was sent but the token is missing/expired/unknown.
+ * header. The token is the ONLY source of the caller's identity — a userId in
+ * the body or query string is never trusted for authorization. Missing, expired
+ * or unknown tokens are rejected with 401.
  */
-function resolveAuthUserId(db: ServerDb, req: IncomingMessage): string | null {
+function requireAuthUserId(db: ServerDb, req: IncomingMessage): string {
   const header = req.headers.authorization;
   if (typeof header !== 'string' || header.trim().length === 0) {
-    return null;
+    throw new HttpError(401, 'Bejelentkezés szükséges.');
   }
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
   if (match === null) {
@@ -475,6 +505,15 @@ function resolveAuthUserId(db: ServerDb, req: IncomingMessage): string | null {
     throw new HttpError(401, 'A bejelentkezés lejárt — jelentkezz be újra.');
   }
   return row.user_id;
+}
+
+/** Verifies the coach admin bearer token (constant-time). */
+function requireAdminToken(req: IncomingMessage, expected: string): void {
+  const header = req.headers.authorization;
+  const match = typeof header === 'string' ? /^Bearer\s+(.+)$/i.exec(header.trim()) : null;
+  if (match === null || !tokensMatch(match[1].trim(), expected)) {
+    throw new HttpError(401, 'Az edzői admin felülethez érvényes token szükséges.');
+  }
 }
 
 /** Builds the full account state returned by register/login and the pull leg. */
@@ -540,15 +579,15 @@ function storeProfileSnapshot(
 
 // --- Push / Pull ------------------------------------------------------------
 
-function handlePush(db: ServerDb, body: unknown, authUserId: string | null = null): unknown {
+function handlePush(db: ServerDb, body: unknown, authUserId: string): unknown {
   const payload = asRecord(body) as unknown as ClientSyncPushPayload;
   const profile = payload.profile;
   if (profile === null || typeof profile !== 'object') {
     throw new HttpError(400, 'Hiányzó onboarding profil a push csomagban.');
   }
-  // An authenticated request is always scoped to the token's user; the body's
-  // userId is ignored so one account can never overwrite another.
-  const userId = authUserId ?? asString(profile.userId ?? payload.deviceId, 'userId');
+  // The authenticated user id is authoritative: any userId/deviceId in the body
+  // is ignored, so one account can never read or overwrite another's rows.
+  const userId = authUserId;
   const now = nowIso();
 
   const existing = getClient(db, userId);
@@ -1100,6 +1139,13 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
     return;
   }
 
+  // ---- Coach admin gate ----------------------------------------------------
+  // Every admin call exposes client data, so it requires the coach token. The
+  // static admin page itself stays public; it only renders after the API answers.
+  if (path.startsWith('/api/admin/')) {
+    requireAdminToken(req, options.adminToken ?? '');
+  }
+
   // ---- Auth ----------------------------------------------------------------
   if (method === 'POST' && path === '/api/auth/register') {
     const body = await readBody(req);
@@ -1114,20 +1160,17 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
 
   // ---- Sync: push ----------------------------------------------------------
   if (method === 'POST' && path === '/api/sync/push') {
-    const authUserId = resolveAuthUserId(db, req);
+    const authUserId = requireAuthUserId(db, req);
     const body = await readBody(req);
     sendJson(res, 200, handlePush(db, body, authUserId));
     return;
   }
 
   // ---- Sync: pull ----------------------------------------------------------
+  // The user id always comes from the bearer token; a `userId` query parameter
+  // is ignored outright so it can never be used to read someone else's data.
   if (method === 'GET' && path === '/api/sync/pull') {
-    const authUserId = resolveAuthUserId(db, req);
-    const requestedUserId = url.searchParams.get('userId');
-    const userId = authUserId ?? requestedUserId;
-    if (userId === null || userId.trim().length === 0) {
-      throw new HttpError(400, 'Hiányzó userId paraméter.');
-    }
+    const userId = requireAuthUserId(db, req);
     sendJson(res, 200, handlePull(db, userId));
     return;
   }
@@ -1235,6 +1278,7 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
 /** Builds the request handler bound to a database and options. */
 export function createApp(db: ServerDb, options: AppOptions = {}): HttpHandler {
   const allowedOrigins = resolveAllowedOrigins(options.allowedOrigins);
+  const resolved: AppOptions = { ...options, adminToken: resolveAdminToken(options.adminToken) };
 
   return (req, res) => {
     // CORS: the web app (https://alexercise.app) and local dev servers call this
@@ -1257,7 +1301,7 @@ export function createApp(db: ServerDb, options: AppOptions = {}): HttpHandler {
       return;
     }
 
-    route(db, options, req, res).catch((cause: unknown) => {
+    route(db, resolved, req, res).catch((cause: unknown) => {
       if (cause instanceof HttpError) {
         sendJson(res, cause.status, { error: cause.message });
         return;

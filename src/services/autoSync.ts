@@ -11,7 +11,7 @@
 // usable offline. Nothing here runs when no backend URL is configured.
 
 import { getDatabase } from '../db/client';
-import { getSyncServerUrl } from '../db/repository';
+import { getLocalAuthSession, getSyncServerUrl } from '../db/repository';
 import { syncPull, syncPush } from './syncService';
 
 /** Coalesces a burst of edits (e.g. rapid set logging) into one push. */
@@ -21,10 +21,27 @@ let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let pushInFlight = false;
 let pushQueued = false;
 
-/** Pull the latest coach state, if a backend is configured. Never throws. */
+/**
+ * Background sync only ever runs for a logged-in device. Without this gate a
+ * fresh browser would pull (and apply) whatever the backend answered, which is
+ * exactly how another user's profile could appear without logging in.
+ */
+async function hasSession(): Promise<boolean> {
+  try {
+    const db = await getDatabase();
+    return (await getLocalAuthSession(db)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Pull the latest coach state, if the device is logged in. Never throws. */
 export async function runAutoPull(): Promise<void> {
   try {
     const db = await getDatabase();
+    if ((await getLocalAuthSession(db)) === null) {
+      return;
+    }
     const url = await getSyncServerUrl(db);
     if (url.length === 0) {
       return;
@@ -35,7 +52,7 @@ export async function runAutoPull(): Promise<void> {
   }
 }
 
-/** Push the client's changed state, if a backend is configured. Never throws. */
+/** Push the client's changed state, if the device is logged in. Never throws. */
 async function flushAutoPush(): Promise<void> {
   if (pushInFlight) {
     // A push is already running; run once more when it finishes.
@@ -45,6 +62,9 @@ async function flushAutoPush(): Promise<void> {
   pushInFlight = true;
   try {
     const db = await getDatabase();
+    if ((await getLocalAuthSession(db)) === null) {
+      return;
+    }
     const url = await getSyncServerUrl(db);
     if (url.length > 0) {
       await syncPush(db, url);
@@ -67,6 +87,10 @@ export function scheduleAutoPush(): void {
   }
   pushTimer = setTimeout(() => {
     pushTimer = null;
-    void flushAutoPush();
+    void (async () => {
+      if (await hasSession()) {
+        await flushAutoPush();
+      }
+    })();
   }, PUSH_DEBOUNCE_MS);
 }

@@ -35,6 +35,11 @@ services:
       # https://alexercise.app syncs from the browser; native apps send no
       # Origin header and are unaffected. Comma-separated; "*" disables checks.
       CORS_ORIGINS: "https://alexercise.app,https://www.alexercise.app"
+      # Coach admin token required by every /api/admin/* call. Set a long random
+      # value in production (e.g. `openssl rand -hex 32`); when unset the server
+      # generates a per-boot token and prints it to the logs. Client accounts use
+      # their own per-user tokens from /api/auth/login and are unaffected.
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
 
     volumes:
       # CRITICAL: persists coach-platform.db (+ its -wal/-shm files) across
