@@ -23,4 +23,5 @@ export type {
   SyncStatus,
   ClientSyncPushPayload,
   CoachSyncPullResponse,
+  AuthSessionResponse,
 } from '../../src/types/workout';

@@ -28,6 +28,29 @@ const SCHEMA_SQL = `
     updated_at TEXT NOT NULL
   );
 
+  -- Login credentials. Kept in its own table so existing databases gain auth
+  -- without an ALTER TABLE migration and credentials stay separable from the
+  -- coach-facing client mirror. username_key is the trimmed + lowercased
+  -- unique lookup key; username preserves the user's chosen casing.
+  CREATE TABLE IF NOT EXISTS client_credentials (
+    user_id TEXT PRIMARY KEY NOT NULL,
+    username TEXT NOT NULL,
+    username_key TEXT NOT NULL UNIQUE,
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- Opaque bearer tokens issued by register/login. Expired rows are pruned lazily.
+  CREATE TABLE IF NOT EXISTS auth_tokens (
+    token TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
+
   -- Coach-authored plans assigned to a specific client.
   CREATE TABLE IF NOT EXISTS coach_templates (
     id TEXT PRIMARY KEY NOT NULL,

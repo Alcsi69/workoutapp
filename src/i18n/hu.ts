@@ -50,6 +50,54 @@ const hu = {
     invalidEmail: 'Adj meg egy érvényes email címet.',
   },
 
+  account: {
+    loginTitle: 'Bejelentkezés',
+    loginSubtitle:
+      'Jelentkezz be a meglévő fiókodba — az edzésterved, a beállításaid és az edzésnaplód visszaáll erre az eszközre.',
+    loginCta: 'Bejelentkezés',
+    haveAccount: 'Már van fiókod? Bejelentkezés',
+    noAccount: 'Nincs még fiókod? Onboarding indítása',
+    username: 'Felhasználónév',
+    password: 'Jelszó',
+    confirmPassword: 'Jelszó megerősítése',
+    usernameHint: '3–32 karakter: betűk, számok, pont, kötőjel, alávonás.',
+    passwordHint: 'Legalább 6 karakter.',
+    accountStepTitle: 'Fiók létrehozása',
+    accountStepSubtitle:
+      'Ezzel a felhasználónévvel és jelszóval bármelyik eszközön (telefon, böngésző, Home Screen PWA) visszakapod az edzésterved és a naplódat.',
+    alreadyLoggedIn: 'Bejelentkezve mint',
+    alreadyLoggedInHint:
+      'Ez az eszköz már egy fiókhoz tartozik. Ha másik fiókba szeretnél belépni, előbb jelentkezz ki a Profil fülön.',
+    secureTitle: 'Fiók biztosítása',
+    secureHint:
+      'Adj meg egy felhasználónevet és jelszót, hogy új eszközön is visszakaphasd a mostani profilodat. Az adataid nem vesznek el.',
+    secureCta: 'Fiók létrehozása',
+    secured: 'A fiókod biztosítva — mostantól bármelyik eszközön be tudsz jelentkezni.',
+    loggedInAs: 'Bejelentkezve',
+    notLoggedIn: 'Nincs bejelentkezve',
+    logout: 'Kijelentkezés',
+    logoutConfirmTitle: 'Kijelentkezés',
+    logoutConfirmMessage:
+      'A rendszer megpróbálja feltölteni a helyi változásokat, majd törli az eszközről a profilodat és az edzésnaplódat. Folytatod?',
+    loggingIn: 'Bejelentkezés…',
+    registering: 'Fiók létrehozása…',
+    errors: {
+      unexpected: 'A szerver váratlan választ adott. Próbálld újra később.',
+      network: 'A hálózati kliens nem elérhető.',
+      noBackend: 'Nincs beállított szerver cím — ellenőrizd a Szinkronizálás beállítást.',
+      usernameRequired: 'Add meg a felhasználónevedet.',
+      passwordRequired: 'Add meg a jelszavadat.',
+      usernameLength: 'A felhasználónév 3-32 karakter hosszú legyen.',
+      usernameChars:
+        'A felhasználónév csak betűket, számokat, pontot, kötőjelet és alávonást tartalmazhat.',
+      passwordLength: 'A jelszó legalább 6 karakter legyen.',
+      passwordMismatch: 'A két jelszó nem egyezik.',
+      loginFailed: 'A bejelentkezés sikertelen.',
+      registerFailed: 'A fiók létrehozása sikertelen.',
+      noProfile: 'Ehhez a fiókhoz még nincs mentett profil. Végezd el az onboardingot.',
+    },
+  },
+
   billingFields: {
     fullName: 'Teljes név',
     email: 'Email cím',
@@ -72,6 +120,7 @@ const hu = {
       step2: 'Heti beosztás',
       step3: 'Ízületi korlátok & Gyakorlat cserék',
       step4: 'Kapcsolat & Számlázási adatok',
+      step5: 'Fiók létrehozása',
       progressLabel: 'lépés',
       finish: 'Terv mentése',
       saving: 'Mentés…',
@@ -314,6 +363,7 @@ const hu = {
       edit: 'Szerkesztés',
       noBilling: 'Nincs megadott számlázási adat.',
       addBilling: 'Számlázási adatok megadása',
+      account: 'Fiók',
     },
     load: {
       axialShort: 'Tengely',

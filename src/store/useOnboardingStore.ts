@@ -17,9 +17,9 @@ import type {
 import { DEFAULT_BILLING_COUNTRY } from '../types/workout';
 import { resolveBillingName } from '../services/billing';
 
-export type OnboardingStep = 1 | 2 | 3 | 4;
+export type OnboardingStep = 1 | 2 | 3 | 4 | 5;
 
-export const ONBOARDING_STEPS: readonly OnboardingStep[] = [1, 2, 3, 4];
+export const ONBOARDING_STEPS: readonly OnboardingStep[] = [1, 2, 3, 4, 5];
 
 /** Substitutions implied by a joint constraint (no manual input required). */
 const AUTO_SUBSTITUTIONS_BY_AREA: Partial<Record<JointArea, Record<string, string>>> = {
@@ -107,6 +107,10 @@ export interface OnboardingDraft {
   billingCity: string;
   billingAddress: string;
   taxNumber: string;
+  // Step 5 — Fiók létrehozása (Phase 7D)
+  username: string;
+  password: string;
+  confirmPassword: string;
 }
 
 interface OnboardingActions {
@@ -150,6 +154,10 @@ interface OnboardingActions {
       >
     >,
   ) => void;
+  /** Step 5 — account credentials. */
+  updateAccount: (
+    patch: Partial<Pick<OnboardingDraft, 'username' | 'password' | 'confirmPassword'>>,
+  ) => void;
   /** Loads an existing profile into the draft so re-onboarding is prefilled. */
   hydrateFromProfile: (profile: UserProfile) => void;
   /** Prefills the billing step from a saved billing profile. */
@@ -184,6 +192,9 @@ const INITIAL_DRAFT: OnboardingDraft = {
   billingCity: '',
   billingAddress: '',
   taxNumber: '',
+  username: '',
+  password: '',
+  confirmPassword: '',
 };
 
 export const useOnboardingStore = create<OnboardingStore>((set) => ({
@@ -193,7 +204,7 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
     set({ step });
   },
   nextStep: () => {
-    set((state) => ({ step: Math.min(4, state.step + 1) as OnboardingStep }));
+    set((state) => ({ step: Math.min(5, state.step + 1) as OnboardingStep }));
   },
   previousStep: () => {
     set((state) => ({ step: Math.max(1, state.step - 1) as OnboardingStep }));
@@ -253,6 +264,10 @@ export const useOnboardingStore = create<OnboardingStore>((set) => ({
     set(patch);
   },
   updateBilling: (patch) => {
+    set(patch);
+  },
+
+  updateAccount: (patch) => {
     set(patch);
   },
 

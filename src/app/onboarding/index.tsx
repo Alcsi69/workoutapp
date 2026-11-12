@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Button } from '../../components/Button';
+import { Card } from '../../components/Card';
 import { Screen } from '../../components/Screen';
 import { StepBiometrics } from '../../components/onboarding/StepBiometrics';
 import { StepSchedule } from '../../components/onboarding/StepSchedule';
 import { StepConstraints } from '../../components/onboarding/StepConstraints';
 import { StepContact } from '../../components/onboarding/StepContact';
+import { StepAccount } from '../../components/onboarding/StepAccount';
 import {
   buildBillingProfileInput,
   buildOnboardingPayload,
@@ -16,11 +18,13 @@ import type { OnboardingStep } from '../../store/useOnboardingStore';
 import { getDatabase } from '../../db/client';
 import {
   getClientBillingProfile,
+  getLocalAuthSession,
   getUserProfile,
   saveClientBillingProfile,
   saveOnboardingPayload,
   USER_PROFILE_ID,
 } from '../../db/repository';
+import { registerAccount, validateNewAccount } from '../../services/authService';
 import { validateClientBillingProfile } from '../../services/billing';
 import { describeBillingErrors } from '../../services/billingMessages';
 import { generateProgramFromProfile } from '../../services/routineGenerator';
@@ -32,9 +36,10 @@ const STEP_TITLES: Record<OnboardingStep, string> = {
   2: hu.onboarding.steps.step2,
   3: hu.onboarding.steps.step3,
   4: hu.onboarding.steps.step4,
+  5: hu.onboarding.steps.step5,
 };
 
-const STEP_COUNT = 4;
+const STEP_COUNT = 5;
 
 export default function OnboardingScreen() {
   const step = useOnboardingStore((state) => state.step);
@@ -45,10 +50,12 @@ export default function OnboardingScreen() {
 
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [authenticatedUsername, setAuthenticatedUsername] = useState<string | null>(null);
   const hydrated = useRef<boolean>(false);
 
   // Prefill from the saved profile so "Onboarding újraindítása" edits the
   // existing plan (and billing record) instead of starting from scratch.
+  // Also detect an existing login so step 5 does not ask for credentials again.
   useEffect(() => {
     if (hydrated.current) {
       return;
@@ -57,15 +64,19 @@ export default function OnboardingScreen() {
 
     getDatabase()
       .then(async (db) => {
-        const [profile, billing] = await Promise.all([
+        const [profile, billing, session] = await Promise.all([
           getUserProfile(db),
           getClientBillingProfile(db),
+          getLocalAuthSession(db),
         ]);
-        return { profile, billing };
+        return { profile, billing, session };
       })
-      .then(({ profile, billing }) => {
+      .then(({ profile, billing, session }) => {
         if (cancelled) {
           return;
+        }
+        if (session !== null) {
+          setAuthenticatedUsername(session.username);
         }
         if (profile !== null) {
           hydrateFromProfile(profile);
@@ -92,9 +103,14 @@ export default function OnboardingScreen() {
     try {
       const db = await getDatabase();
       const draft = useOnboardingStore.getState();
+      const session = await getLocalAuthSession(db);
+      // A pre-existing (pre-auth) profile being re-onboarded should be secured
+      // in place rather than forked into a second account.
+      const existingProfile = session === null ? await getUserProfile(db) : null;
 
       // Required contact/billing fields must validate before anything persists.
-      const billingInput = buildBillingProfileInput(draft, USER_PROFILE_ID);
+      const provisionalUserId = session?.userId ?? USER_PROFILE_ID;
+      let billingInput = buildBillingProfileInput(draft, provisionalUserId);
       const validation = validateClientBillingProfile(billingInput);
       if (!validation.valid) {
         setError(describeBillingErrors(validation));
@@ -102,7 +118,32 @@ export default function OnboardingScreen() {
         return;
       }
 
-      const payload = buildOnboardingPayload(draft, USER_PROFILE_ID);
+      let payload = buildOnboardingPayload(draft, provisionalUserId);
+
+      if (session === null) {
+        // New user: create the account first so the profile is stored under the
+        // server's user id, then persist the same data locally.
+        const accountError = validateNewAccount(
+          draft.username,
+          draft.password,
+          draft.confirmPassword,
+        );
+        if (accountError !== null) {
+          setError(accountError);
+          setSaving(false);
+          return;
+        }
+        const state = await registerAccount(db, {
+          username: draft.username,
+          password: draft.password,
+          ...(existingProfile !== null ? { userId: existingProfile.userId } : {}),
+          profile: payload,
+          billingProfile: billingInput,
+        });
+        payload = buildOnboardingPayload(draft, state.userId);
+        billingInput = buildBillingProfileInput(draft, state.userId);
+      }
+
       await saveOnboardingPayload(db, payload);
       await saveClientBillingProfile(db, billingInput);
       // Build the tailored program immediately so the tabs show the real plan.
@@ -157,7 +198,7 @@ export default function OnboardingScreen() {
         accessibilityRole="progressbar"
         accessibilityValue={{ min: 1, max: STEP_COUNT, now: step }}
       >
-        {[1, 2, 3, 4].map((index) => (
+        {[1, 2, 3, 4, 5].map((index) => (
           <View
             key={index}
             style={[styles.progressSegment, index <= step ? styles.progressSegmentActive : null]}
@@ -168,10 +209,23 @@ export default function OnboardingScreen() {
         {step} / {STEP_COUNT} {hu.onboarding.steps.progressLabel}
       </Text>
 
-      {step === 1 ? <StepBiometrics /> : null}
+      {step === 1 ? (
+        <>
+          <Card title={hu.account.haveAccount}>
+            <Button
+              label={hu.account.haveAccount}
+              variant="secondary"
+              onPress={() => router.push('/login')}
+              disabled={saving}
+            />
+          </Card>
+          <StepBiometrics />
+        </>
+      ) : null}
       {step === 2 ? <StepSchedule /> : null}
       {step === 3 ? <StepConstraints /> : null}
       {step === 4 ? <StepContact /> : null}
+      {step === 5 ? <StepAccount authenticatedUsername={authenticatedUsername} /> : null}
     </Screen>
   );
 }

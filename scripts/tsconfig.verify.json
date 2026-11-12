@@ -24,6 +24,7 @@
     "../src/services/billing.ts",
     "../src/services/routineGenerator.ts",
     "../src/services/syncService.ts",
+    "../src/services/authService.ts",
     "../src/services/plateCalculator.ts",
     "../src/services/backupService.ts",
     "../src/store/useOnboardingStore.ts",

@@ -22,6 +22,8 @@ import type {
   SyncBatchPayload,
 } from '../types/workout';
 import {
+  getActiveUserId,
+  getLocalAuthSession,
   USER_PROFILE_ID,
   applyClientSyncPullPayload,
   getClientBillingProfile,
@@ -126,6 +128,15 @@ async function readJson<T>(response: FetchResponse): Promise<T | null> {
 }
 
 /**
+ * Authenticated headers for a sync request: the bearer token is attached when
+ * the device is logged in, so the server scopes push/pull to that account.
+ */
+async function authHeaders(db: SQLiteDatabase): Promise<Record<string, string>> {
+  const session = await getLocalAuthSession(db);
+  return session === null ? {} : { Authorization: `Bearer ${session.token}` };
+}
+
+/**
  * Builds the outgoing batch: a fresh batchId/generatedAt envelope wrapping every
  * locally dirty session's full nested graph. Feed this to the Szinkronizálás
  * preview modal to inspect the exact JSON on device.
@@ -169,7 +180,7 @@ export async function buildClientSyncPushPayload(
   return {
     batchId: createBatchId(),
     generatedAt: new Date().toISOString(),
-    deviceId: USER_PROFILE_ID,
+    deviceId: profile.userId || USER_PROFILE_ID,
     profile: payload,
     billingProfile,
     sessions,
@@ -218,7 +229,7 @@ export async function syncPush(
   try {
     const pushResponse = await doFetch(`${url}/sync/push`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeaders(db)) },
       body: JSON.stringify(payload),
     });
 
@@ -279,9 +290,10 @@ export async function syncPull(
   }
 
   try {
+    const userId = await getActiveUserId(db);
     const pullResponse = await doFetch(
-      `${url}/sync/pull?userId=${encodeURIComponent(USER_PROFILE_ID)}`,
-      { method: 'GET', headers: { Accept: 'application/json' } },
+      `${url}/sync/pull?userId=${encodeURIComponent(userId)}`,
+      { method: 'GET', headers: { Accept: 'application/json', ...(await authHeaders(db)) } },
     );
     if (!pullResponse.ok) {
       return { ...skipped, error: `A szerver hibát adott vissza (HTTP ${pullResponse.status}).` };

@@ -14,10 +14,12 @@ import { Pill } from '../../components/Badge';
 import { Screen } from '../../components/Screen';
 import { SyncCard } from '../../components/SyncCard';
 import { BillingCard } from '../../components/profile/BillingCard';
+import { AccountCard } from '../../components/profile/AccountCard';
 import { getDatabase } from '../../db/client';
 import {
   getClientBillingProfile,
   getExerciseCatalog,
+  getLocalAuthSession,
   getUserProfile,
 } from '../../db/repository';
 import {
@@ -25,6 +27,7 @@ import {
   importFullDatabaseSnapshot,
 } from '../../services/backupService';
 import { confirm, notify } from '../../services/dialogs';
+import { logoutAccount } from '../../services/authService';
 import { formatDateHu } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
@@ -34,6 +37,7 @@ interface ProfileData {
   profile: UserProfile | null;
   billing: ClientBillingProfile | null;
   exerciseNames: Record<string, string>;
+  username: string | null;
 }
 
 function severityTone(severity: JointConstraintSeverity): 'danger' | 'warning' | 'neutral' {
@@ -155,21 +159,43 @@ export default function ProfileScreen() {
   const load = useCallback(async (): Promise<void> => {
     try {
       const db = await getDatabase();
-      const [profile, billing, catalog] = await Promise.all([
+      const [profile, billing, catalog, session] = await Promise.all([
         getUserProfile(db),
         getClientBillingProfile(db),
         getExerciseCatalog(db),
+        getLocalAuthSession(db),
       ]);
       const exerciseNames: Record<string, string> = {};
       for (const item of catalog) {
         exerciseNames[item.id] = item.nameHu;
       }
-      setData({ profile, billing, exerciseNames });
+      setData({ profile, billing, exerciseNames, username: session?.username ?? null });
       setError(null);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, []);
+
+  const handleLogout = (): void => {
+    confirm({
+      title: hu.account.logoutConfirmTitle,
+      message: hu.account.logoutConfirmMessage,
+      confirmLabel: hu.account.logout,
+      cancelLabel: hu.common.cancel,
+      destructive: true,
+      onConfirm: () => {
+        void (async () => {
+          try {
+            const db = await getDatabase();
+            await logoutAccount(db);
+            router.replace('/login');
+          } catch (cause: unknown) {
+            notify(hu.common.error, cause instanceof Error ? cause.message : String(cause));
+          }
+        })();
+      },
+    });
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -189,7 +215,7 @@ export default function ProfileScreen() {
     );
   }
 
-  const { profile, billing, exerciseNames } = data;
+  const { profile, billing, exerciseNames, username } = data;
 
   if (profile === null) {
     return (
@@ -300,6 +326,13 @@ export default function ProfileScreen() {
         }}
       />
 
+      <AccountCard
+        username={username}
+        onSecured={() => {
+          void load();
+        }}
+      />
+
       <SyncCard />
 
       <BackupSection
@@ -317,6 +350,8 @@ export default function ProfileScreen() {
         variant="secondary"
         onPress={() => router.push('/onboarding')}
       />
+
+      <Button label={hu.account.logout} variant="danger" onPress={handleLogout} />
     </Screen>
   );
 }

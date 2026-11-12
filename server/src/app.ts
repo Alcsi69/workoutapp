@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type {
+  AuthSessionResponse,
   ClientBillingProfile,
   ClientSyncPushPayload,
   CoachingBooking,
@@ -25,6 +26,15 @@ import type {
 } from './types';
 import { EXERCISE_CATALOG } from './catalog';
 import { allRows, firstRow, runSql, type ServerDb, type SqlParam } from './db';
+import {
+  createAuthToken,
+  hashPassword,
+  normalizeUsername,
+  usernameKey,
+  validatePassword,
+  validateUsername,
+  verifyPassword,
+} from './auth';
 
 const CATALOG_BY_ID = new Map<string, ExerciseCatalogItem>(
   EXERCISE_CATALOG.map((item) => [item.id, item]),
@@ -41,6 +51,24 @@ interface ClientRow {
   billing_json: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** A login credential row (see server/src/db.ts). */
+interface CredentialRow {
+  user_id: string;
+  username: string;
+  username_key: string;
+  password_salt: string;
+  password_hash: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AuthTokenRow {
+  token: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
 }
 
 interface TemplateRow {
@@ -387,15 +415,140 @@ function listOpenSlots(db: ServerDb, now: string): CoachingSlot[] {
   ).map(toSlot);
 }
 
+// --- Auth helpers -----------------------------------------------------------
+
+/** How long an issued bearer token stays valid. */
+const TOKEN_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+
+function getCredentialByKey(db: ServerDb, key: string): CredentialRow | null {
+  return firstRow<CredentialRow>(
+    db,
+    'SELECT * FROM client_credentials WHERE username_key = ? LIMIT 1;',
+    [key],
+  );
+}
+
+function getCredentialByUserId(db: ServerDb, userId: string): CredentialRow | null {
+  return firstRow<CredentialRow>(
+    db,
+    'SELECT * FROM client_credentials WHERE user_id = ? LIMIT 1;',
+    [userId],
+  );
+}
+
+/** Issues a fresh opaque bearer token for a user, prunes that user's expired ones. */
+function issueToken(db: ServerDb, userId: string): string {
+  const now = nowIso();
+  const token = createAuthToken();
+  const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
+  runSql(db, 'DELETE FROM auth_tokens WHERE expires_at <= ?;', [now]);
+  runSql(
+    db,
+    `INSERT INTO auth_tokens (token, user_id, created_at, expires_at)
+     VALUES (?, ?, ?, ?);`,
+    [token, userId, now, expiresAt],
+  );
+  return token;
+}
+
+/**
+ * Resolves the authenticated user id from an `Authorization: Bearer <token>`
+ * header. Returns null when no header was sent (legacy pre-auth clients) and
+ * throws 401 when a header was sent but the token is missing/expired/unknown.
+ */
+function resolveAuthUserId(db: ServerDb, req: IncomingMessage): string | null {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || header.trim().length === 0) {
+    return null;
+  }
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (match === null) {
+    throw new HttpError(401, 'Érvénytelen hitelesítési fejléc.');
+  }
+  const token = match[1].trim();
+  const row = firstRow<AuthTokenRow>(
+    db,
+    'SELECT * FROM auth_tokens WHERE token = ? AND expires_at > ? LIMIT 1;',
+    [token, nowIso()],
+  );
+  if (row === null) {
+    throw new HttpError(401, 'A bejelentkezés lejárt — jelentkezz be újra.');
+  }
+  return row.user_id;
+}
+
+/** Builds the full account state returned by register/login and the pull leg. */
+function buildAccountState(db: ServerDb, userId: string): Omit<AuthSessionResponse, 'token' | 'username'> {
+  const client = getClient(db, userId);
+  return {
+    userId,
+    profile: client === null ? null : parseProfile(client.profile_json),
+    billingProfile: client === null ? null : parseBilling(client.billing_json),
+    sessions: listSessions(db, userId),
+    templates: listTemplates(db, userId),
+    bookings: listBookings(db, userId),
+    slots: listOpenSlots(db, nowIso()),
+  };
+}
+
+function buildAuthResponse(
+  db: ServerDb,
+  credential: CredentialRow,
+  token: string,
+): AuthSessionResponse {
+  return {
+    token,
+    username: credential.username,
+    ...buildAccountState(db, credential.user_id),
+  };
+}
+
+/** Stores a profile payload sent alongside auth/push, scoped to `userId`. */
+function storeProfileSnapshot(
+  db: ServerDb,
+  userId: string,
+  profile: OnboardingPayload,
+  billingProfile: ClientBillingProfile | null | undefined,
+): void {
+  const now = nowIso();
+  const existing = getClient(db, userId);
+  const createdAt = existing?.created_at ?? now;
+  const billingJson =
+    billingProfile !== undefined && billingProfile !== null
+      ? JSON.stringify({ ...billingProfile, userId })
+      : (existing?.billing_json ?? null);
+
+  runSql(
+    db,
+    `INSERT INTO clients (user_id, locale, profile_json, billing_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       locale = excluded.locale,
+       profile_json = excluded.profile_json,
+       billing_json = excluded.billing_json,
+       updated_at = excluded.updated_at;`,
+    [
+      userId,
+      profile.locale ?? 'hu',
+      JSON.stringify({ ...profile, userId }),
+      billingJson,
+      createdAt,
+      now,
+    ],
+  );
+}
+
 // --- Push / Pull ------------------------------------------------------------
 
-function handlePush(db: ServerDb, body: unknown): unknown {
+function handlePush(db: ServerDb, body: unknown, authUserId: string | null = null): unknown {
   const payload = asRecord(body) as unknown as ClientSyncPushPayload;
   const profile = payload.profile;
   if (profile === null || typeof profile !== 'object') {
     throw new HttpError(400, 'Hiányzó onboarding profil a push csomagban.');
   }
-  const userId = asString(profile.userId ?? payload.deviceId, 'userId');
+  // An authenticated request is always scoped to the token's user; the body's
+  // userId is ignored so one account can never overwrite another.
+  const userId = authUserId ?? asString(profile.userId ?? payload.deviceId, 'userId');
   const now = nowIso();
 
   const existing = getClient(db, userId);
@@ -414,7 +567,14 @@ function handlePush(db: ServerDb, body: unknown): unknown {
        profile_json = excluded.profile_json,
        billing_json = excluded.billing_json,
        updated_at = excluded.updated_at;`,
-    [userId, profile.locale ?? 'hu', JSON.stringify(profile), billingJson, createdAt, now],
+    [
+      userId,
+      profile.locale ?? 'hu',
+      JSON.stringify({ ...profile, userId }),
+      billingJson,
+      createdAt,
+      now,
+    ],
   );
 
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
@@ -481,6 +641,7 @@ function handlePush(db: ServerDb, body: unknown): unknown {
 }
 
 function handlePull(db: ServerDb, userId: string): CoachSyncPullResponse {
+  const client = getClient(db, userId);
   return {
     syncId: createId('sync_pull'),
     generatedAt: nowIso(),
@@ -488,13 +649,104 @@ function handlePull(db: ServerDb, userId: string): CoachSyncPullResponse {
     templates: listTemplates(db, userId),
     bookings: listBookings(db, userId),
     slots: listOpenSlots(db, nowIso()),
+    profile: client === null ? null : parseProfile(client.profile_json),
+    billingProfile: client === null ? null : parseBilling(client.billing_json),
+    sessions: listSessions(db, userId),
   };
+}
+
+// --- Auth: register / login -------------------------------------------------
+
+/** Shared validation + persistence for a new or upgraded credential. */
+function handleRegister(db: ServerDb, body: unknown): AuthSessionResponse {
+  const input = asRecord(body);
+  const username = normalizeUsername(asString(input.username, 'username'));
+  const password = asString(input.password, 'password');
+
+  const usernameError = validateUsername(username);
+  if (usernameError !== null) {
+    throw new HttpError(400, usernameError);
+  }
+  const passwordError = validatePassword(password);
+  if (passwordError !== null) {
+    throw new HttpError(400, passwordError);
+  }
+
+  const key = usernameKey(username);
+  const takenBy = getCredentialByKey(db, key);
+  // A request may attach credentials to an existing local user id (the upgrade
+  // path for profiles created before auth existed). Otherwise a new id is minted.
+  const userId = optionalString(input.userId) ?? createId('usr');
+
+  if (takenBy !== null && takenBy.user_id !== userId) {
+    throw new HttpError(409, 'Ez a felhasználónév már foglalt.');
+  }
+  const existingForUser = getCredentialByUserId(db, userId);
+  if (existingForUser !== null) {
+    // Never overwrite an existing password without proving ownership: the user
+    // must log in instead (login issues a fresh token).
+    throw new HttpError(409, 'Ez a fiók már rendelkezik bejelentkezéssel — jelentkezz be.');
+  }
+
+  const now = nowIso();
+  const passwordHash = hashPassword(password);
+  runSql(
+    db,
+    `INSERT INTO client_credentials
+       (user_id, username, username_key, password_salt, password_hash, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       username = excluded.username,
+       username_key = excluded.username_key,
+       password_salt = excluded.password_salt,
+       password_hash = excluded.password_hash,
+       updated_at = excluded.updated_at;`,
+    [userId, username, key, passwordHash.salt, passwordHash.hash, now, now],
+  );
+
+  // Optional onboarding snapshot sent with the registration (new user finishing
+  // onboarding, or an existing user securing their account from Profil).
+  const profile = input.profile;
+  if (profile !== null && typeof profile === 'object' && !Array.isArray(profile)) {
+    storeProfileSnapshot(
+      db,
+      userId,
+      profile as OnboardingPayload,
+      (input.billingProfile as ClientBillingProfile | null | undefined) ?? null,
+    );
+  }
+
+  const credential = getCredentialByUserId(db, userId);
+  if (credential === null) {
+    throw new HttpError(500, 'A fiók létrehozása sikertelen.');
+  }
+  const token = issueToken(db, userId);
+  return buildAuthResponse(db, credential, token);
+}
+
+function handleLogin(db: ServerDb, body: unknown): AuthSessionResponse {
+  const input = asRecord(body);
+  const username = asString(input.username, 'username');
+  const password = asString(input.password, 'password');
+
+  const credential = getCredentialByKey(db, usernameKey(username));
+  if (
+    credential === null ||
+    !verifyPassword(password, credential.password_salt, credential.password_hash)
+  ) {
+    // Same message for unknown user and wrong password: never reveal which.
+    throw new HttpError(401, 'Hibás felhasználónév vagy jelszó.');
+  }
+
+  const token = issueToken(db, credential.user_id);
+  return buildAuthResponse(db, credential, token);
 }
 
 // --- Admin: clients ---------------------------------------------------------
 
 interface ClientSummary {
   userId: string;
+  username: string | null;
   locale: string;
   fullName: string | null;
   biometrics: OnboardingPayload['biometrics'] | null;
@@ -519,6 +771,7 @@ function toClientSummary(db: ServerDb, row: ClientRow): ClientSummary {
   );
   return {
     userId: row.user_id,
+    username: getCredentialByUserId(db, row.user_id)?.username ?? null,
     locale: row.locale,
     fullName: billing?.fullName ?? null,
     biometrics: profile?.biometrics ?? null,
@@ -847,16 +1100,31 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
     return;
   }
 
+  // ---- Auth ----------------------------------------------------------------
+  if (method === 'POST' && path === '/api/auth/register') {
+    const body = await readBody(req);
+    sendJson(res, 201, handleRegister(db, body));
+    return;
+  }
+  if (method === 'POST' && path === '/api/auth/login') {
+    const body = await readBody(req);
+    sendJson(res, 200, handleLogin(db, body));
+    return;
+  }
+
   // ---- Sync: push ----------------------------------------------------------
   if (method === 'POST' && path === '/api/sync/push') {
+    const authUserId = resolveAuthUserId(db, req);
     const body = await readBody(req);
-    sendJson(res, 200, handlePush(db, body));
+    sendJson(res, 200, handlePush(db, body, authUserId));
     return;
   }
 
   // ---- Sync: pull ----------------------------------------------------------
   if (method === 'GET' && path === '/api/sync/pull') {
-    const userId = url.searchParams.get('userId');
+    const authUserId = resolveAuthUserId(db, req);
+    const requestedUserId = url.searchParams.get('userId');
+    const userId = authUserId ?? requestedUserId;
     if (userId === null || userId.trim().length === 0) {
       throw new HttpError(400, 'Hiányzó userId paraméter.');
     }
@@ -980,7 +1248,7 @@ export function createApp(db: ServerDb, options: AppOptions = {}): HttpHandler {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization');
     res.setHeader('Access-Control-Max-Age', '86400');
 
     if ((req.method ?? 'GET') === 'OPTIONS') {

@@ -329,6 +329,31 @@ export interface CoachSyncPullResponse {
   bookings: CoachingBooking[];
   /** Currently open (unbooked, upcoming) 1-on-1 coaching slots. */
   slots: CoachingSlot[];
+  /**
+   * Phase 7D — full account state. Only the authenticated `/api/sync/pull`
+   * returns these; they let a fresh browser/PWA/phone hydrate its local SQLite
+   * database (profile, onboarding constraints, billing and workout history)
+   * without redoing onboarding. Optional so older servers stay compatible.
+   */
+  profile?: OnboardingPayload | null;
+  billingProfile?: ClientBillingProfile | null;
+  sessions?: WorkoutSessionLog[];
+}
+
+/**
+ * Phase 7D — auth response for `POST /api/auth/register` and
+ * `POST /api/auth/login`: the bearer token plus the account's full sync state.
+ */
+export interface AuthSessionResponse {
+  token: string;
+  userId: string;
+  username: string;
+  profile: OnboardingPayload | null;
+  billingProfile: ClientBillingProfile | null;
+  sessions: WorkoutSessionLog[];
+  templates: WorkoutTemplate[];
+  bookings: CoachingBooking[];
+  slots: CoachingSlot[];
 }
 
 // --- Phase 5: progressive overload memory, 1RM analytics, PR detection ------

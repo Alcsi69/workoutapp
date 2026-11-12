@@ -15,14 +15,15 @@
 src/
 ├── app/                  # Expo Router screens
 │   ├── (tabs)/           # Main bottom tab navigation (Edzés, Sablonok, Időpontok, Előzmények, Profil)
-│   ├── onboarding/       # Multi-step onboarding survey flow (4 steps)
+│   ├── onboarding/       # Multi-step onboarding survey flow (5 steps, incl. account creation)
+│   ├── login.tsx         # Returning-user login (restores the account onto a fresh device/PWA)
 │   ├── workout/[id].tsx  # Active workout logger (mid-workout add/remove/reorder)
 │   └── _layout.tsx       # Root layout & SQLite initialization
 ├── components/           # Reusable, stateless UI building blocks
 │   ├── logger/           # Logger-specific pieces (ExerciseBlockCard, PlateCalculatorModal, ...)
-│   ├── onboarding/       # StepBiometrics, StepSchedule, StepConstraints, StepContact
+│   ├── onboarding/       # StepBiometrics, StepSchedule, StepConstraints, StepContact, StepAccount
 │   ├── booking/          # BookingModal (1-on-1 slot reservation)
-│   ├── profile/          # BillingCard (contact & billing editor)
+│   ├── profile/          # BillingCard (contact & billing editor), AccountCard (credentials/logout status)
 │   └── history/          # History/progression views
 ├── db/                   # SQLite schema migrations, seed data, and typed query helpers
 ├── i18n/                 # Localization strings (hu.ts)
@@ -75,6 +76,10 @@ Migrations live in `src/db/schema.ts` (`migrate`, guarded by SQLite `user_versio
    - **Mobile sync** (`services/syncService.ts`, `db/repository.ts`, `components/SyncCard.tsx`, `app/(tabs)/booking.tsx`): `syncPendingWorkouts(db, baseUrl)` now performs a full Push → Pull; `applyClientSyncPullPayload(db, pull)` atomically reconciles coach templates, open slots and booking statuses/notes; the Szinkronizálás card gained a configurable **Szerver URL** (default `http://10.0.2.2:4000`).
    - **Schema v6**: `app_settings` (device-local settings store).
    - **Verification**: `npm run verify:server` boots the real server in-memory, simulates a client push, a coach confirm + plan assignment, a pull, and asserts `applyClientSyncPullPayload` hydrates the mobile DB.
+9. **Accounts — username + password (v6, no migration)** — login on new devices/PWAs without redoing onboarding:
+   - **Server** (`server/src/auth.ts`, `server/src/db.ts`, `server/src/app.ts`): `client_credentials` (unique trimmed/lowercased `username_key`, salted `crypto.scrypt` hash) and `auth_tokens` tables; `POST /api/auth/register` (new account or credential upgrade for an existing `userId`) and `POST /api/auth/login` return an opaque bearer token + full account state. Sync endpoints read `Authorization: Bearer …` and scope push/pull to that user (legacy token-less clients keep working).
+   - **Client** (`services/authService.ts`, `db/repository.ts`): the session (user id, username, token) is stored in `app_settings`; `loginWithCredentials` applies the server snapshot (profile, constraints, billing, workout logs), runs a pull and regenerates the tailored program. `logoutAccount` best-effort pushes then wipes local user data.
+   - **UI**: first onboarding step has a prominent "Már van fiókod? Bejelentkezés" button; step 5 creates the account; Profil shows the logged-in username, the upgrade card for pre-auth profiles, and a danger "Kijelentkezés" button using the shared dialog service.
 
 ## 5. Engineering Rules
 - Zero `any`; all domain unions and literal types are preserved in `src/types/workout.ts`.

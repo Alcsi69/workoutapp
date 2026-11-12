@@ -14,6 +14,8 @@ interface TextFieldProps {
   keyboardType?: KeyboardTypeOptions;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   autoCorrect?: boolean;
+  /** Masks the input (passwords). Defaults to false. */
+  secureTextEntry?: boolean;
 }
 
 /**
@@ -30,6 +32,7 @@ export function TextField({
   keyboardType = 'default',
   autoCapitalize = 'sentences',
   autoCorrect = false,
+  secureTextEntry = false,
 }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
   return (
@@ -43,6 +46,7 @@ export function TextField({
         keyboardType={keyboardType}
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
+        secureTextEntry={secureTextEntry}
         selectionColor={colors.accent}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}

@@ -68,10 +68,75 @@ import type {
 // --- JSON column helpers ----------------------------------------------------
 
 /**
- * This phase is single-user, single-device: one profile row. The id is stable so
- * re-running onboarding updates the same row and its constraints.
+ * This app is single-user per device. `usr_local` is the id used by profiles
+ * created before accounts existed; once a user registers or logs in, the
+ * account's server id becomes the active owner (see `getActiveUserId`).
  */
 export const USER_PROFILE_ID = 'usr_local';
+
+// --- Local auth session (Phase 7D) ------------------------------------------
+//
+// Credentials never live on the device — only the opaque bearer token, the
+// server user id and the display username, so a refresh/reload stays logged in
+// (localStorage/IndexedDB on web, the SQLite file on native).
+
+const AUTH_USER_ID_KEY = 'auth.userId';
+const AUTH_USERNAME_KEY = 'auth.username';
+const AUTH_TOKEN_KEY = 'auth.token';
+
+export interface LocalAuthSession {
+  userId: string;
+  username: string;
+  token: string;
+}
+
+async function getSetting(db: SQLiteDatabase, key: string): Promise<string | null> {
+  const row = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_settings WHERE key = ? LIMIT 1;',
+    key,
+  );
+  const value = row?.value?.trim();
+  return value !== undefined && value.length > 0 ? value : null;
+}
+
+/** The locally persisted login session, or null when the device is logged out. */
+export async function getLocalAuthSession(db: SQLiteDatabase): Promise<LocalAuthSession | null> {
+  const [userId, username, token] = await Promise.all([
+    getSetting(db, AUTH_USER_ID_KEY),
+    getSetting(db, AUTH_USERNAME_KEY),
+    getSetting(db, AUTH_TOKEN_KEY),
+  ]);
+  if (userId === null || username === null || token === null) {
+    return null;
+  }
+  return { userId, username, token };
+}
+
+/** Persists the login session (token + owning user id + display username). */
+export async function saveLocalAuthSession(
+  db: SQLiteDatabase,
+  session: LocalAuthSession,
+): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(UPSERT_SETTING_SQL, AUTH_USER_ID_KEY, session.userId);
+    await db.runAsync(UPSERT_SETTING_SQL, AUTH_USERNAME_KEY, session.username);
+    await db.runAsync(UPSERT_SETTING_SQL, AUTH_TOKEN_KEY, session.token);
+  });
+}
+
+/** Removes the login session. Local domain data is left untouched. */
+export async function clearLocalAuthSession(db: SQLiteDatabase): Promise<void> {
+  await db.runAsync('DELETE FROM app_settings WHERE key IN (?, ?, ?);', AUTH_USER_ID_KEY, AUTH_USERNAME_KEY, AUTH_TOKEN_KEY);
+}
+
+/**
+ * The id owning the local data: the logged-in account when there is one, else
+ * the legacy single-device profile id.
+ */
+export async function getActiveUserId(db: SQLiteDatabase): Promise<string> {
+  const sessionUserId = await getSetting(db, AUTH_USER_ID_KEY);
+  return sessionUserId ?? USER_PROFILE_ID;
+}
 
 function parseStringArray(raw: string): string[] {
   try {
@@ -156,7 +221,8 @@ const INSERT_JOINT_CONSTRAINT_SQL = `
  * Called by the root redirect and by the Profil tab.
  */
 export async function getUserProfile(db: SQLiteDatabase): Promise<UserProfile | null> {
-  const row = await db.getFirstAsync<UserProfileRow>(SELECT_PROFILE_SQL, USER_PROFILE_ID);
+  const userId = await getActiveUserId(db);
+  const row = await db.getFirstAsync<UserProfileRow>(SELECT_PROFILE_SQL, userId);
   if (row === null) {
     return null;
   }
@@ -246,14 +312,15 @@ export async function saveOnboardingPayload(
 
 export async function getJointConstraints(
   db: SQLiteDatabase,
-  userId: string = USER_PROFILE_ID,
+  userId?: string,
 ): Promise<JointConstraint[]> {
+  const owner = userId ?? (await getActiveUserId(db));
   const rows = await db.getAllAsync<JointConstraintRow>(
     `SELECT id, user_id, area, severity, notes, created_at
      FROM joint_constraints
      WHERE user_id = ?
      ORDER BY created_at, area;`,
-    userId,
+    owner,
   );
 
   return rows.map((row) => {
@@ -1053,9 +1120,10 @@ function toClientBillingProfile(row: ClientBillingProfileRow): ClientBillingProf
 /** The client's contact & billing record, or null when none has been saved. */
 export async function getClientBillingProfile(
   db: SQLiteDatabase,
-  userId: string = USER_PROFILE_ID,
+  userId?: string,
 ): Promise<ClientBillingProfile | null> {
-  const row = await db.getFirstAsync<ClientBillingProfileRow>(SELECT_BILLING_PROFILE_SQL, userId);
+  const owner = userId ?? (await getActiveUserId(db));
+  const row = await db.getFirstAsync<ClientBillingProfileRow>(SELECT_BILLING_PROFILE_SQL, owner);
   return row === null ? null : toClientBillingProfile(row);
 }
 
@@ -1283,9 +1351,10 @@ export async function getOpenCoachingSlots(
 /** The client's bookings, newest first. */
 export async function getCoachingBookings(
   db: SQLiteDatabase,
-  userId: string = USER_PROFILE_ID,
+  userId?: string,
 ): Promise<CoachingBooking[]> {
-  const rows = await db.getAllAsync<CoachingBookingRow>(SELECT_BOOKINGS_SQL, userId);
+  const owner = userId ?? (await getActiveUserId(db));
+  const rows = await db.getAllAsync<CoachingBookingRow>(SELECT_BOOKINGS_SQL, owner);
   return rows.map(toCoachingBooking);
 }
 
@@ -1299,8 +1368,9 @@ export async function createCoachingBooking(
   db: SQLiteDatabase,
   slotId: string,
   clientNotes?: string,
-  userId: string = USER_PROFILE_ID,
+  userId?: string,
 ): Promise<CoachingBooking> {
+  const owner = userId ?? (await getActiveUserId(db));
   const slotRow = await db.getFirstAsync<CoachingSlotRow>(
     `SELECT id, starts_at, ends_at, modality, location_or_link, is_booked
      FROM coaching_slots WHERE id = ? LIMIT 1;`,
@@ -1322,7 +1392,7 @@ export async function createCoachingBooking(
       INSERT_BOOKING_SQL,
       id,
       slotId,
-      userId,
+      owner,
       slotRow.modality,
       slotRow.starts_at,
       slotRow.ends_at,
@@ -1379,15 +1449,16 @@ export async function cancelCoachingBooking(
 /** Bookings still awaiting an upload to the coach backend. */
 export async function getDirtyCoachingBookings(
   db: SQLiteDatabase,
-  userId: string = USER_PROFILE_ID,
+  userId?: string,
 ): Promise<CoachingBooking[]> {
+  const owner = userId ?? (await getActiveUserId(db));
   const rows = await db.getAllAsync<CoachingBookingRow>(
     `SELECT id, slot_id, user_id, modality, starts_at, ends_at, location_or_link,
             client_notes, coach_notes, status, sync_status, created_at
      FROM coaching_bookings
      WHERE user_id = ? AND sync_status = 'local_dirty'
      ORDER BY starts_at;`,
-    userId,
+    owner,
   );
   return rows.map(toCoachingBooking);
 }
@@ -2165,6 +2236,199 @@ const UPSERT_PULLED_BOOKING_SQL = `
     sync_status = 'synced';
 `;
 
+// --- Account snapshot restore (Phase 7D) ------------------------------------
+//
+// Login, register and the authenticated pull all return the account's profile,
+// billing record and workout logs so a fresh browser/PWA/phone can rebuild its
+// offline database. The helpers below write those snapshots directly inside an
+// existing transaction (the pull apply) or open one themselves (login import).
+
+/** Upserts a pulled profile + its joint constraints (inside a transaction). */
+async function applyProfileSnapshotInTransaction(
+  db: SQLiteDatabase,
+  payload: OnboardingPayload,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { biometrics, trainingProfile, constraints } = payload;
+
+  await db.runAsync(
+    UPSERT_PROFILE_SQL,
+    payload.userId,
+    payload.locale,
+    biometrics.age,
+    biometrics.weightKg,
+    biometrics.heightCm,
+    trainingProfile.primaryGoal,
+    trainingProfile.experienceMonths,
+    trainingProfile.strengthDaysPerWeek,
+    trainingProfile.runningDaysPerWeek,
+    trainingProfile.targetRunDistanceKm ?? null,
+    trainingProfile.sessionDurationMinutes,
+    trainingProfile.equipment,
+    JSON.stringify(constraints.excludedExerciseIds),
+    JSON.stringify(constraints.preferredSubstitutions),
+    now,
+    now,
+  );
+
+  await db.runAsync('DELETE FROM joint_constraints WHERE user_id = ?;', payload.userId);
+  for (const limitation of constraints.jointLimitations) {
+    await db.runAsync(
+      INSERT_JOINT_CONSTRAINT_SQL,
+      `jc_${payload.userId}_${limitation.area}`,
+      payload.userId,
+      limitation.area,
+      limitation.severity,
+      limitation.notes ?? null,
+      now,
+    );
+  }
+}
+
+/** Upserts a pulled billing record (inside a transaction). */
+async function applyBillingSnapshotInTransaction(
+  db: SQLiteDatabase,
+  billing: ClientBillingProfile,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.runAsync(
+    UPSERT_BILLING_PROFILE_SQL,
+    billing.userId,
+    billing.fullName,
+    billing.email,
+    billing.phone,
+    billing.billingName,
+    billing.billingCountry || DEFAULT_BILLING_COUNTRY,
+    billing.billingZip,
+    billing.billingCity,
+    billing.billingAddress,
+    billing.taxNumber !== undefined && billing.taxNumber.length > 0
+      ? billing.taxNumber
+      : null,
+    now,
+    now,
+  );
+}
+
+/**
+ * Inserts/updates a nested workout log (session → blocks → sets → running
+ * metrics). Rows already present locally are refreshed, so re-importing the
+ * same account state is idempotent. Must run inside a transaction.
+ */
+async function applySessionSnapshotInTransaction(
+  db: SQLiteDatabase,
+  session: WorkoutSessionLog,
+): Promise<void> {
+  await db.runAsync(
+    `INSERT INTO session_logs
+       (id, program_day_id, session_type, title, started_at, completed_at, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       program_day_id = excluded.program_day_id,
+       session_type = excluded.session_type,
+       title = excluded.title,
+       started_at = excluded.started_at,
+       completed_at = excluded.completed_at,
+       sync_status = excluded.sync_status;`,
+    session.id,
+    session.programDayId ?? null,
+    session.sessionType,
+    session.title,
+    session.startedAt,
+    session.completedAt ?? null,
+    'synced',
+  );
+
+  for (let index = 0; index < session.exerciseBlocks.length; index += 1) {
+    const block = session.exerciseBlocks[index];
+    const blockId = block.id.length > 0 ? block.id : `${session.id}:${index}`;
+    await db.runAsync(
+      `INSERT INTO session_exercise_blocks
+         (id, session_id, order_index, exercise_id, substituted_from_exercise_id,
+          rest_seconds, notes, target_sets, target_reps)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         session_id = excluded.session_id,
+         order_index = excluded.order_index,
+         exercise_id = excluded.exercise_id,
+         substituted_from_exercise_id = excluded.substituted_from_exercise_id,
+         rest_seconds = excluded.rest_seconds,
+         notes = excluded.notes,
+         target_sets = excluded.target_sets,
+         target_reps = excluded.target_reps;`,
+      blockId,
+      session.id,
+      index,
+      block.exerciseId,
+      block.substitutedFromExerciseId ?? null,
+      block.restSeconds,
+      block.notes ?? null,
+      block.targetSets ?? null,
+      block.targetReps ?? null,
+    );
+
+    for (const set of block.sets) {
+      await db.runAsync(UPSERT_SET_LOG_SQL, set.id, blockId, set.setNumber, set.setType, set.targetWeightKg ?? null, set.actualWeightKg, set.targetReps, set.actualReps, normalizeRpe(set.rpe), set.completedAt);
+    }
+  }
+
+  if (session.runningMetrics !== undefined) {
+    const metrics = session.runningMetrics;
+    await db.runAsync(
+      UPSERT_RUNNING_METRICS_SQL,
+      session.id,
+      metrics.distanceKm,
+      metrics.durationSeconds,
+      metrics.avgPaceSecondsPerKm,
+      metrics.perceivedEffortRpe ?? null,
+    );
+  }
+}
+
+/**
+ * Imports a batch of server-held workout logs into the local database (used when
+ * logging in on a fresh device). Idempotent and all-or-nothing.
+ */
+export async function importSessionLogs(
+  db: SQLiteDatabase,
+  sessions: readonly WorkoutSessionLog[],
+): Promise<number> {
+  if (sessions.length === 0) {
+    return 0;
+  }
+  await db.withTransactionAsync(async () => {
+    for (const session of sessions) {
+      await applySessionSnapshotInTransaction(db, session);
+    }
+  });
+  return sessions.length;
+}
+
+/**
+ * Wipes every piece of local user data and the login session, keeping only the
+ * device-local settings (e.g. the configured backend URL). Used by logout so the
+ * next account starts from a clean device.
+ */
+export async function wipeLocalUserData(db: SQLiteDatabase): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM set_logs;');
+    await db.runAsync('DELETE FROM running_metrics;');
+    await db.runAsync('DELETE FROM session_exercise_blocks;');
+    await db.runAsync('DELETE FROM session_logs;');
+    await db.runAsync('DELETE FROM coaching_bookings;');
+    await db.runAsync('DELETE FROM coaching_slots;');
+    await db.runAsync('DELETE FROM client_billing_profiles;');
+    await db.runAsync('DELETE FROM template_exercise_blocks;');
+    await db.runAsync('DELETE FROM workout_templates;');
+    await db.runAsync('DELETE FROM exercise_catalog WHERE is_custom = 1;');
+    await db.runAsync('DELETE FROM joint_constraints;');
+    await db.runAsync('DELETE FROM user_profiles;');
+    await db.runAsync(
+      "DELETE FROM app_settings WHERE key IN ('auth.userId', 'auth.username', 'auth.token');",
+    );
+  });
+}
+
 /**
  * Applies a coach pull response to the local database, atomically:
  *
@@ -2177,6 +2441,10 @@ const UPSERT_PULLED_BOOKING_SQL = `
  * 3. `coaching_bookings` are reconciled: status, coach notes and the meeting
  *    link come from the server and are marked `synced`, so a confirmed/completed
  *    booking stops showing as pending.
+ * 4. Phase 7D — when the authenticated pull carries the account snapshot
+ *    (`profile`, `billingProfile`, `sessions`), the local profile, billing record
+ *    and workout history are restored too. This is what lets a fresh device log
+ *    in and skip onboarding entirely.
  *
  * @param payload the parsed `GET /api/sync/pull` response body.
  */
@@ -2273,6 +2541,39 @@ export async function applyClientSyncPullPayload(
         booking.status,
         booking.createdAt,
       );
+    }
+
+    // --- 4. Account snapshot (authenticated pull only) ----------------------
+    // Only fill gaps: an existing local profile/billing record or session is
+    // never overwritten by the pull, so unsynced local edits (and the debounced
+    // push that follows them) can not be clobbered by a stale server copy.
+    if (payload.profile !== undefined && payload.profile !== null) {
+      const existingProfile = await db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM user_profiles WHERE id = ? LIMIT 1;',
+        payload.profile.userId,
+      );
+      if (existingProfile === null) {
+        await applyProfileSnapshotInTransaction(db, payload.profile);
+      }
+    }
+    if (payload.billingProfile !== undefined && payload.billingProfile !== null) {
+      const existingBilling = await db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM client_billing_profiles WHERE id = ? LIMIT 1;',
+        payload.billingProfile.userId,
+      );
+      if (existingBilling === null) {
+        await applyBillingSnapshotInTransaction(db, payload.billingProfile);
+      }
+    }
+    if (payload.sessions !== undefined && payload.sessions.length > 0) {
+      const existingSessions = await db.getAllAsync<{ id: string }>('SELECT id FROM session_logs;');
+      const known = new Set(existingSessions.map((row) => row.id));
+      for (const session of payload.sessions) {
+        if (!known.has(session.id)) {
+          await applySessionSnapshotInTransaction(db, session);
+          known.add(session.id);
+        }
+      }
     }
   });
 }

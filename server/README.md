@@ -39,12 +39,28 @@ duplication; the wire contracts stay identical on both sides.
 
 ## Endpoints
 
-### Client sync
+### Authentication
+
+Credentials are stored as a salted `crypto.scrypt` hash (no native addons), with
+a unique case-insensitive username key. Successful calls return an opaque bearer
+token valid for 180 days plus the account's full state (profile, billing, workout
+logs, coach plans/bookings/slots).
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/sync/push` | Ingest the client's onboarding profile, billing record, dirty sessions and bookings. |
-| `GET` | `/api/sync/pull?userId=…` | Return the coach's assignments: coach plans, booking statuses/notes/links, open slots. |
+| `POST` | `/api/auth/register` | Create an account, or attach credentials to an existing `userId` (pre-auth profile upgrade). Optional `profile` + `billingProfile` snapshots are stored with it. |
+| `POST` | `/api/auth/login` | Verify username + password and return the token and full sync state. |
+
+### Client sync
+
+Send `Authorization: Bearer <token>` to scope the request to the authenticated
+account. Requests without the header keep working for installations that have
+not created an account yet (legacy `userId`/`deviceId` path).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/sync/push` | Ingest the client's onboarding profile, billing record, dirty sessions and bookings. The token's user id wins over any body `userId`. |
+| `GET` | `/api/sync/pull?userId=…` | Return the coach's assignments plus the account snapshot (profile, billing, workout logs) so a fresh device/PWA can restore itself. |
 
 ### Coach admin
 
@@ -60,8 +76,9 @@ duplication; the wire contracts stay identical on both sides.
 | `DELETE` | `/api/admin/slots/:slotId` | Remove a slot (its bookings are cancelled first). |
 | `PATCH` | `/api/admin/bookings/:bookingId` | Confirm / complete / cancel a booking and attach `coachNotes` + a meeting link. |
 
-CORS is permissive (`Access-Control-Allow-Origin: *`) and `OPTIONS` preflight is
-handled, so the admin web and a LAN-hosted dev client can both talk to it.
+CORS reflects the configured allowlist (or `*` via `CORS_ORIGINS`) and `OPTIONS`
+preflight is handled, so the admin web and a LAN-hosted dev client can both talk
+to it. `Authorization` is an allowed request header.
 
 ## Admin web
 
