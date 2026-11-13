@@ -320,6 +320,7 @@ async function main() {
     assert.equal(res.body.booking.coachNotes, 'Várunk a teremben, hozz térdvédőt.');
   });
 
+  let coachTemplateId = null;
   await check('POST /api/admin/clients/:id/templates assigns a coach plan', async () => {
     const res = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/templates`, {
       method: 'POST',
@@ -339,6 +340,7 @@ async function main() {
     assert.equal(res.body.template.exercises.length, 2);
     assert.equal(res.body.template.exercises[0].exercise.id, 'belt_squat');
     assert.equal(res.body.template.exercises[0].exercise.axialLoadScore, 1);
+    coachTemplateId = res.body.template.id;
   });
 
   await check('POST /api/admin/slots publishes a new open slot', async () => {
@@ -532,6 +534,10 @@ async function main() {
     );
     assert.equal(pullB.body.billingProfile, null);
     assert.equal(pullB.body.templates.length, 0);
+    assert.ok(
+      !pullB.body.templates.some((t) => t.id === coachTemplateId),
+      'User A\'s assigned template must not appear in User B\'s pull',
+    );
     assert.equal(pullB.body.bookings.length, 0);
   });
 
@@ -548,6 +554,125 @@ async function main() {
     );
     assert.equal(pullA2.body.billingProfile.billingZip, '1052');
     assert.ok(pullA2.body.templates.some((t) => t.source === 'coach'));
+  });
+
+  const originalSessionTitle = pullA2.body.sessions[0].title;
+
+  await check('User B cannot overwrite User A\'s session by reusing its id', async () => {
+    const collision = await http(`${apiBase}/api/sync/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...bearer(tokenB) },
+      body: JSON.stringify({
+        batchId: 'sync_collision',
+        generatedAt: nowIso,
+        deviceId: userB,
+        profile: userBProfile,
+        billingProfile: null,
+        sessions: [{ ...userBSession, id: sessionId, title: 'B collision' }],
+        bookings: [],
+      }),
+    });
+    assert.equal(collision.status, 200);
+
+    const pullA3 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenA) });
+    assert.equal(pullA3.body.sessions.length, 1);
+    assert.equal(pullA3.body.sessions[0].title, originalSessionTitle, 'A row must not be overwritten');
+
+    const pullB3 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenB) });
+    assert.ok(
+      !pullB3.body.sessions.some((s) => s.id === sessionId),
+      'B must never inherit A\'s session id',
+    );
+  });
+
+  await check('Admin cannot reassign an existing template to another user', async () => {
+    const fixedId = 'tpl_collision_test';
+    const first = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({
+        id: fixedId,
+        title: 'A collision plan',
+        sessionType: 'strength',
+        blocks: [{ exerciseId: 'belt_squat' }],
+      }),
+    });
+    assert.equal(first.status, 201);
+
+    const second = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userB)}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({
+        id: fixedId,
+        title: 'B collision plan',
+        sessionType: 'strength',
+        blocks: [{ exerciseId: 'belt_squat' }],
+      }),
+    });
+    assert.equal(second.status, 409);
+    assert.ok(String(second.body.error).includes('másik ügyfél'));
+  });
+
+  await check('Global default template is readable by every user but owned by nobody', async () => {
+    const global = await http(`${apiBase}/api/admin/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({
+        title: 'Globális alap sablon',
+        sessionType: 'strength',
+        blocks: [{ exerciseId: 'belt_squat' }],
+      }),
+    });
+    assert.equal(global.status, 201);
+    const globalId = global.body.template.id;
+
+    const row = server.db.prepare('SELECT user_id FROM coach_templates WHERE id = ?').get(globalId);
+    assert.equal(row.user_id, null, 'global template has no owner');
+
+    const pullA4 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenA) });
+    const pullB4 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenB) });
+    assert.ok(pullA4.body.templates.some((t) => t.id === globalId), 'A sees the global default');
+    assert.ok(pullB4.body.templates.some((t) => t.id === globalId), 'B sees the global default');
+    assert.ok(
+      pullA4.body.templates.some((t) => t.id === coachTemplateId),
+      'A still sees its own assigned plan',
+    );
+    assert.ok(
+      !pullB4.body.templates.some((t) => t.id === coachTemplateId),
+      'B must not see A\'s assigned plan',
+    );
+  });
+
+  await check('wipeLocalUserData removes custom templates, exercises and sessions', async () => {
+    const customExercise = await repository.createCustomExercise(db, {
+      nameHu: 'Saját teszt gyakorlat',
+      category: 'isolation',
+      equipment: 'barbell',
+      movementPattern: 'isolation',
+    });
+    assert.ok(customExercise.id.startsWith('cust_'));
+
+    const customTemplate = await repository.createCustomTemplate(db, {
+      title: 'Saját teszt sablon',
+      sessionType: 'strength',
+      blocks: [
+        {
+          exerciseId: customExercise.id,
+          targetSets: 3,
+          targetReps: '8-10',
+          restSeconds: 90,
+        },
+      ],
+    });
+    assert.ok(customTemplate.id.startsWith('tpl_user'));
+    assert.ok((await repository.getWorkoutTemplates(db)).some((t) => t.id === customTemplate.id));
+
+    await repository.wipeLocalUserData(db);
+
+    assert.equal((await repository.getWorkoutTemplates(db)).length, 0);
+    assert.ok(!(await repository.getExerciseCatalog(db)).some((e) => e.id === customExercise.id));
+    assert.equal((await repository.getSessionHistory(db)).length, 0);
+    assert.equal(await repository.getUserProfile(db), null);
   });
 
   await check('a fresh client logging in as B hydrates only B data', async () => {

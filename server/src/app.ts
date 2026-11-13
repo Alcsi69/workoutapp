@@ -74,7 +74,8 @@ interface AuthTokenRow {
 
 interface TemplateRow {
   id: string;
-  user_id: string;
+  /** NULL marks a global default template readable by every client. */
+  user_id: string | null;
   title: string;
   session_type: string;
   goal: string | null;
@@ -412,11 +413,22 @@ function listClients(db: ServerDb): ClientRow[] {
   return allRows<ClientRow>(db, 'SELECT * FROM clients ORDER BY updated_at DESC;');
 }
 
+/** The client's own plans plus intentional global defaults (`user_id IS NULL`). */
 function listTemplates(db: ServerDb, userId: string): WorkoutTemplate[] {
   return allRows<TemplateRow>(
     db,
-    'SELECT * FROM coach_templates WHERE user_id = ? ORDER BY assigned_at DESC, created_at DESC;',
+    `SELECT * FROM coach_templates
+      WHERE user_id = ? OR user_id IS NULL
+      ORDER BY assigned_at DESC, created_at DESC;`,
     [userId],
+  ).map(toWorkoutTemplate);
+}
+
+/** Only the intentional system-wide defaults, used by the admin global view. */
+function listGlobalTemplates(db: ServerDb): WorkoutTemplate[] {
+  return allRows<TemplateRow>(
+    db,
+    'SELECT * FROM coach_templates WHERE user_id IS NULL ORDER BY assigned_at DESC, created_at DESC;',
   ).map(toWorkoutTemplate);
 }
 
@@ -629,7 +641,8 @@ function handlePush(db: ServerDb, body: unknown, authUserId: string): unknown {
          started_at = excluded.started_at,
          completed_at = excluded.completed_at,
          sync_status = excluded.sync_status,
-         payload_json = excluded.payload_json;`,
+         payload_json = excluded.payload_json
+       WHERE workout_sessions.user_id = excluded.user_id;`,
       [
         session.id,
         userId,
@@ -660,7 +673,8 @@ function handlePush(db: ServerDb, body: unknown, authUserId: string): unknown {
          ends_at = excluded.ends_at,
          location_or_link = excluded.location_or_link,
          client_notes = excluded.client_notes,
-         sync_status = 'synced';`,
+         sync_status = 'synced'
+       WHERE coaching_bookings.user_id = excluded.user_id;`,
       [
         booking.id,
         booking.slotId,
@@ -916,8 +930,14 @@ function invoiceCsv(exportData: InvoiceExport): string {
 
 // --- Admin: templates -------------------------------------------------------
 
+/** Admin route segment that creates/updates an intentional global default. */
+const GLOBAL_TEMPLATE_SCOPE = '__global__';
+
 function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): WorkoutTemplate {
   const input = asRecord(body);
+  // `__global__` is the admin's explicit "system-wide default" marker; the row
+  // is stored with user_id = NULL so every client reads it and nobody owns it.
+  const targetUserId = userId === GLOBAL_TEMPLATE_SCOPE ? null : userId;
   const title = asString(input.title, 'title');
   const sessionType = (optionalString(input.sessionType) ?? 'strength') as SessionType;
   const rawBlocks = input.blocks;
@@ -947,11 +967,21 @@ function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): Work
 
   const id = optionalString(input.id) ?? createId('tpl_coach');
   const now = nowIso();
-  const existing = firstRow<{ created_at: string }>(
+  const existing = firstRow<{ user_id: string | null; created_at: string }>(
     db,
-    'SELECT created_at FROM coach_templates WHERE id = ? LIMIT 1;',
+    'SELECT user_id, created_at FROM coach_templates WHERE id = ? LIMIT 1;',
     [id],
   );
+  // An id is unique across the whole table. Reusing another owner's id would
+  // silently move (or overwrite) their plan, so reject it outright instead.
+  if (existing !== null && existing.user_id !== targetUserId) {
+    throw new HttpError(
+      409,
+      existing.user_id === null
+        ? 'Ez az azonosító egy globális alapértelmezett sablonhoz tartozik.'
+        : 'Ez a sablon már egy másik ügyfélhez tartozik.',
+    );
+  }
   const createdAt = existing?.created_at ?? now;
   const goal = optionalString(input.goal) ?? null;
   const coachNote = optionalString(input.coachNote) ?? null;
@@ -962,14 +992,13 @@ function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): Work
        (id, user_id, title, session_type, goal, coach_note, assigned_at, created_at, blocks_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
-       user_id = excluded.user_id,
        title = excluded.title,
        session_type = excluded.session_type,
        goal = excluded.goal,
        coach_note = excluded.coach_note,
        assigned_at = excluded.assigned_at,
        blocks_json = excluded.blocks_json;`,
-    [id, userId, title, sessionType, goal, coachNote, now, createdAt, JSON.stringify(blocks)],
+    [id, targetUserId, title, sessionType, goal, coachNote, now, createdAt, JSON.stringify(blocks)],
   );
 
   const template = listTemplates(db, userId).find((entry) => entry.id === id);
@@ -1231,7 +1260,20 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
     return;
   }
 
-  // ---- Admin: templates ----------------------------------------------------
+  // ---- Admin: global default templates ------------------------------------
+  // These are intentional system-wide plans (`user_id IS NULL`) that every
+  // authenticated client reads on pull. Clients can never write to them.
+  if (method === 'GET' && path === '/api/admin/templates') {
+    sendJson(res, 200, { templates: listGlobalTemplates(db) });
+    return;
+  }
+  if (method === 'POST' && path === '/api/admin/templates') {
+    const body = await readBody(req);
+    sendJson(res, 201, { template: handleCreateTemplate(db, GLOBAL_TEMPLATE_SCOPE, body) });
+    return;
+  }
+
+  // ---- Admin: per-client templates ----------------------------------------
   const templates = CLIENT_TEMPLATES_RE.exec(path);
   if (method === 'POST' && templates !== null) {
     const userId = decodeURIComponent(templates[1]);

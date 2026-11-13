@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
-import type { KeyboardTypeOptions } from 'react-native';
+import { useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type { KeyboardTypeOptions, TextInputInstance } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing, typography } from '../theme/tokens';
 
 interface TextFieldProps {
@@ -35,27 +36,55 @@ export function TextField({
   secureTextEntry = false,
 }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
+  // Only meaningful when the field is a password. Toggling visibility must not
+  // dismiss the keyboard, so the input is refocused after every tap.
+  const [showPassword, setShowPassword] = useState(false);
+  const inputRef = useRef<TextInputInstance>(null);
+  const isPassword = secureTextEntry;
+  const togglePasswordVisibility = (): void => {
+    setShowPassword((visible) => !visible);
+    inputRef.current?.focus();
+  };
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={colors.textMuted}
-        keyboardType={keyboardType}
-        autoCapitalize={autoCapitalize}
-        autoCorrect={autoCorrect}
-        secureTextEntry={secureTextEntry}
-        selectionColor={colors.accent}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        style={[
-          styles.input,
-          focused ? styles.inputFocused : null,
-          error !== null && error !== undefined ? styles.inputError : null,
-        ]}
-      />
+      <View style={styles.inputWrap}>
+        <TextInput
+          ref={inputRef}
+          value={value}
+          onChangeText={onChange}
+          placeholder={placeholder}
+          placeholderTextColor={colors.textMuted}
+          keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={autoCorrect}
+          secureTextEntry={isPassword && !showPassword}
+          selectionColor={colors.accent}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={[
+            styles.input,
+            isPassword ? styles.inputPassword : null,
+            focused ? styles.inputFocused : null,
+            error !== null && error !== undefined ? styles.inputError : null,
+          ]}
+        />
+        {isPassword ? (
+          <Pressable
+            onPress={togglePasswordVisibility}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={showPassword ? 'Jelszó elrejtése' : 'Jelszó megjelenítése'}
+            style={styles.passwordToggle}
+          >
+            <Ionicons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={20}
+              color={focused ? colors.accent : colors.textMuted}
+            />
+          </Pressable>
+        ) : null}
+      </View>
       {hint !== undefined && (error === null || error === undefined) ? (
         <Text style={styles.hint}>{hint}</Text>
       ) : null}
@@ -75,6 +104,9 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
+  inputWrap: {
+    position: 'relative',
+  },
   input: {
     minHeight: 44,
     color: colors.textPrimary,
@@ -85,6 +117,19 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
+  },
+  // Leaves room for the eye button so long passwords never sit underneath it.
+  inputPassword: {
+    paddingRight: spacing.xxl + spacing.sm,
+  },
+  passwordToggle: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   inputError: {
     borderColor: colors.danger,

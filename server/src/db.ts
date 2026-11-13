@@ -51,10 +51,12 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
 
-  -- Coach-authored plans assigned to a specific client.
+  -- Coach-authored plans assigned to a specific client. A NULL user_id marks a
+  -- global default template: every authenticated client may read it, but no
+  -- client may ever write to it (only the coach admin can).
   CREATE TABLE IF NOT EXISTS coach_templates (
     id TEXT PRIMARY KEY NOT NULL,
-    user_id TEXT NOT NULL,
+    user_id TEXT,
     title TEXT NOT NULL,
     session_type TEXT NOT NULL,
     goal TEXT,
@@ -110,6 +112,43 @@ const SCHEMA_SQL = `
 `;
 
 /**
+ * Rebuilds `coach_templates` when an older database still declares
+ * `user_id NOT NULL`. Global default templates need a NULL owner so every
+ * authenticated client can read them without belonging to any one account.
+ * SQLite cannot drop a NOT NULL constraint in place, so the table is copied.
+ */
+function migrateCoachTemplates(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(coach_templates);').all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const userIdColumn = columns.find((column) => column.name === 'user_id');
+  if (userIdColumn === undefined || userIdColumn.notnull === 0) {
+    return;
+  }
+  db.exec(`
+    ALTER TABLE coach_templates RENAME TO coach_templates_legacy;
+    CREATE TABLE coach_templates (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT,
+      title TEXT NOT NULL,
+      session_type TEXT NOT NULL,
+      goal TEXT,
+      coach_note TEXT,
+      assigned_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      blocks_json TEXT NOT NULL
+    );
+    INSERT INTO coach_templates
+      (id, user_id, title, session_type, goal, coach_note, assigned_at, created_at, blocks_json)
+    SELECT id, user_id, title, session_type, goal, coach_note, assigned_at, created_at, blocks_json
+    FROM coach_templates_legacy;
+    DROP TABLE coach_templates_legacy;
+    CREATE INDEX IF NOT EXISTS idx_coach_templates_user ON coach_templates(user_id);
+  `);
+}
+
+/**
  * Opens (creating if needed) the coach platform database and applies the schema.
  * `:memory:` skips the directory creation — the verify harness uses it.
  */
@@ -119,6 +158,7 @@ export function openServerDatabase(filePath: string): ServerDb {
   }
   const db = new DatabaseSync(filePath);
   db.exec(SCHEMA_SQL);
+  migrateCoachTemplates(db);
   return db;
 }
 

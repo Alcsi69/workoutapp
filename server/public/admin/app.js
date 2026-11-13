@@ -563,9 +563,11 @@ async function loadBuilder() {
   }
 
   const select = $('#builderClient');
-  select.innerHTML = state.clients
-    .map((c) => `<option value="${esc(c.userId)}">${esc(c.fullName || c.userId)}</option>`)
-    .join('');
+  select.innerHTML =
+    `<option value="__global__">Globális alapértelmezett (minden ügyfél)</option>` +
+    state.clients
+      .map((c) => `<option value="${esc(c.userId)}">${esc(c.fullName || c.userId)}</option>`)
+      .join('');
   if (state.selectedClientId) select.value = state.selectedClientId;
   select.onchange = () => {
     state.selectedClientId = select.value;
@@ -662,7 +664,11 @@ async function saveTemplate() {
   if (!title) return toast('A terv neve kötelező.', true);
   if (state.builderBlocks.length === 0) return toast('Adj hozzá legalább egy gyakorlatot.', true);
   try {
-    await api(`/api/admin/clients/${encodeURIComponent(userId)}/templates`, {
+    const templatePath =
+      userId === '__global__'
+        ? '/api/admin/templates'
+        : `/api/admin/clients/${encodeURIComponent(userId)}/templates`;
+    await api(templatePath, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -692,12 +698,15 @@ async function renderExistingTemplates() {
     return;
   }
   try {
-    const detail = await api(`/api/admin/clients/${encodeURIComponent(userId)}`);
+    const templates =
+      userId === '__global__'
+        ? (await api('/api/admin/templates')).templates
+        : (await api(`/api/admin/clients/${encodeURIComponent(userId)}`)).templates;
     host.innerHTML =
-      detail.templates.length === 0
+      templates.length === 0
         ? ''
-        : `<h3 style="margin-top:14px;">Kiosztott tervek</h3>` +
-          detail.templates
+        : `<h3 style="margin-top:14px;">${userId === '__global__' ? 'Globális tervek' : 'Kiosztott tervek'}</h3>` +
+          templates
             .map(
               (t) => `
         <div class="item">
