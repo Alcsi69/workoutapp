@@ -6,9 +6,9 @@
 // upgrading an existing local profile happens from the Profil screen.
 //
 // Logging in on a fresh browser/PWA/phone applies the account state returned by
-// the server (profile, onboarding constraints, billing, workout logs), runs a
-// full pull for coach plans/bookings, and regenerates the tailored program so
-// the Sablonok tab is never empty.
+// the server (profile, onboarding constraints, billing, workout logs) and runs a
+// full pull for coach plans/bookings. Templates are never generated locally: the
+// Sablonok tab starts empty until the coach assigns a plan or the user builds one.
 
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type {

@@ -249,14 +249,12 @@ const hu = {
       exerciseCount: 'gyakorlat',
       setsShort: 'sorozat',
       restShort: 'pihenő',
-      empty: 'Nincsenek sablonok.',
+      empty:
+        'Még nincs edzésterved. Az edződ által kijelölt tervek szinkronizálás után jelennek meg — húzd le a frissítést, vagy hozz létre saját sablont.',
+      actionsTitle: 'Sablonok',
+      actionsHint: 'Hozz létre saját edzéstervet, vagy böngészd a gyakorlat katalógust.',
       start: 'Indítás',
       newTemplate: 'Új sablon',
-      regenerate: 'Sablonok újragenerálása profil alapján',
-      regenerateHint:
-        'Az ízületi korlátok, a kizárt gyakorlatok és a cél táv figyelembevételével frissíti a sablonokat.',
-      regenerateDone: 'A sablonok frissültek a profilod alapján.',
-      regenerateNoProfile: 'Nincs mentett profil — előbb töltsd ki az onboardingot.',
       browseCatalog: 'Katalógus böngészése',
       catalogTitle: 'Gyakorlat katalógus',
       catalogCaption: 'Keresd, szűrd és böngészd a teljes gyakorlatadatbázist.',

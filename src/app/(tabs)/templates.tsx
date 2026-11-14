@@ -13,7 +13,6 @@ import {
   getWorkoutTemplates,
   startSessionFromTemplate,
 } from '../../db/repository';
-import { generateProgramFromProfile } from '../../services/routineGenerator';
 import { useSyncRefresh } from '../../hooks/useSyncRefresh';
 import { formatRestHu, formatTargetPrescription } from '../../services/format';
 import hu from '../../i18n/hu';
@@ -131,8 +130,6 @@ export default function TemplatesScreen() {
   const [startingId, setStartingId] = useState<string | null>(null);
   const [editorVisible, setEditorVisible] = useState(false);
   const [catalogVisible, setCatalogVisible] = useState(false);
-  const [regenerating, setRegenerating] = useState(false);
-  const [banner, setBanner] = useState<string | null>(null);
 
   const loadTemplates = useCallback(async (): Promise<void> => {
     const db = await getDatabase();
@@ -192,22 +189,9 @@ export default function TemplatesScreen() {
     }
   };
 
-  const handleRegenerate = async (): Promise<void> => {
-    setRegenerating(true);
-    setBanner(null);
-    try {
-      const db = await getDatabase();
-      const result = await generateProgramFromProfile(db);
-      await loadTemplates();
-      setBanner(
-        result.generated ? hu.screens.templates.regenerateDone : hu.screens.templates.regenerateNoProfile,
-      );
-    } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setRegenerating(false);
-    }
-  };
+
+
+
 
   if (templates === null) {
     return (
@@ -238,17 +222,9 @@ export default function TemplatesScreen() {
       onRefresh={refresh}
       refreshing={refreshing}
     >
-      <Card title={hu.screens.templates.regenerate} caption={hu.screens.templates.regenerateHint}>
-        <Button
-          label={hu.screens.templates.regenerate}
-          onPress={() => {
-            void handleRegenerate();
-          }}
-          loading={regenerating}
-        />
+      <Card title={hu.screens.templates.actionsTitle} caption={hu.screens.templates.actionsHint}>
         <Button
           label={hu.screens.templates.newTemplate}
-          variant="secondary"
           onPress={() => setEditorVisible(true)}
         />
         <Button
@@ -256,7 +232,6 @@ export default function TemplatesScreen() {
           variant="secondary"
           onPress={() => setCatalogVisible(true)}
         />
-        {banner !== null ? <Text style={styles.banner}>{banner}</Text> : null}
         {error !== null ? <Text style={styles.error}>{error}</Text> : null}
       </Card>
 
@@ -328,10 +303,6 @@ const styles = StyleSheet.create({
   },
   catalogCaption: {
     color: colors.textMuted,
-    fontSize: typography.sizes.sm,
-  },
-  banner: {
-    color: colors.success,
     fontSize: typography.sizes.sm,
   },
   sectionTitle: {
