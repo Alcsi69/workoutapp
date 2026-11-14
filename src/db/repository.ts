@@ -2405,6 +2405,45 @@ export async function importSessionLogs(
 }
 
 /**
+ * Re-binds every locally owner-scoped row from `fromUserId` to `toUserId`.
+ *
+ * The device is single-user, so workout logs, templates and custom exercises
+ * carry no owner column of their own; the rows that do are the profile, its
+ * joint constraints, the billing record and the coaching bookings. Only rows
+ * owned by `fromUserId` are moved — anything belonging to another id (a
+ * leftover from a shared, pre-isolation sync) stays behind and is never adopted
+ * by the new account. Used when registration returns a server id that differs
+ * from the device's previous local id.
+ */
+export async function rekeyLocalUserData(
+  db: SQLiteDatabase,
+  fromUserId: string,
+  toUserId: string,
+): Promise<void> {
+  if (fromUserId === toUserId) {
+    return;
+  }
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('UPDATE user_profiles SET id = ? WHERE id = ?;', toUserId, fromUserId);
+    await db.runAsync(
+      'UPDATE joint_constraints SET user_id = ? WHERE user_id = ?;',
+      toUserId,
+      fromUserId,
+    );
+    await db.runAsync(
+      'UPDATE client_billing_profiles SET id = ? WHERE id = ?;',
+      toUserId,
+      fromUserId,
+    );
+    await db.runAsync(
+      'UPDATE coaching_bookings SET user_id = ? WHERE user_id = ?;',
+      toUserId,
+      fromUserId,
+    );
+  });
+}
+
+/**
  * Wipes every piece of local user data and the login session, keeping only the
  * device-local settings (e.g. the configured backend URL). Used by logout so the
  * next account starts from a clean device.

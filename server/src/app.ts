@@ -477,6 +477,19 @@ function getCredentialByUserId(db: ServerDb, userId: string): CredentialRow | nu
   );
 }
 
+/**
+ * Mints a user id that collides with neither an existing credential nor an
+ * existing client row, so a fresh account can never inherit another's data.
+ */
+function mintUserId(db: ServerDb): string {
+  for (;;) {
+    const candidate = createId('usr');
+    if (getCredentialByUserId(db, candidate) === null && getClient(db, candidate) === null) {
+      return candidate;
+    }
+  }
+}
+
 /** Issues a fresh opaque bearer token for a user, prunes that user's expired ones. */
 function issueToken(db: ServerDb, userId: string): string {
   const now = nowIso();
@@ -726,20 +739,27 @@ function handleRegister(db: ServerDb, body: unknown): AuthSessionResponse {
   }
 
   const key = usernameKey(username);
+  // Username uniqueness is the ONLY registration conflict: a taken username is
+  // refused no matter which device, user id or casing asks for it.
   const takenBy = getCredentialByKey(db, key);
-  // A request may attach credentials to an existing local user id (the upgrade
-  // path for profiles created before auth existed). Otherwise a new id is minted.
-  const userId = optionalString(input.userId) ?? createId('usr');
-
-  if (takenBy !== null && takenBy.user_id !== userId) {
+  if (takenBy !== null) {
     throw new HttpError(409, 'Ez a felhasználónév már foglalt.');
   }
-  const existingForUser = getCredentialByUserId(db, userId);
-  if (existingForUser !== null) {
-    // Never overwrite an existing password without proving ownership: the user
-    // must log in instead (login issues a fresh token).
-    throw new HttpError(409, 'Ez a fiók már rendelkezik bejelentkezéssel — jelentkezz be.');
-  }
+
+  // A request may attach credentials to the existing local user id it already
+  // owns — the upgrade path for profiles created before auth existed (Case A):
+  // the row is reused in place, so the client keeps all its data.
+  //
+  // Case B: the supplied id is already claimed by a *different* registered
+  // account. Devices that synced before per-user isolation all used the same
+  // local id (`usr_local`), so this is expected — a brand-new username must
+  // still be able to register. Mint a fresh server id instead of rejecting it;
+  // the client re-binds its local rows to the id returned here.
+  const requestedUserId = optionalString(input.userId);
+  const userId =
+    requestedUserId !== undefined && getCredentialByUserId(db, requestedUserId) === null
+      ? requestedUserId
+      : mintUserId(db);
 
   const now = nowIso();
   const passwordHash = hashPassword(password);

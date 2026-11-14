@@ -26,6 +26,7 @@ import {
   getSyncServerUrl,
   getUserProfile,
   importSessionLogs,
+  rekeyLocalUserData,
   saveClientBillingProfile,
   saveLocalAuthSession,
   saveOnboardingPayload,
@@ -206,6 +207,19 @@ export async function registerAccount(
   }
 
   const state = parseAuthResponse(result.body);
+
+  // The server is authoritative for the account id. Registering from a device
+  // that already holds local data usually keeps that id (Case A), but when the
+  // id is already claimed by another account the server mints a fresh one
+  // (Case B — pre-isolation devices all shared `usr_local`). Re-bind the local
+  // owner-scoped rows BEFORE saving the session and before any push/pull, so
+  // the profile, billing record and bookings follow the new account instead of
+  // being orphaned under the old id.
+  const previousUserId = await getActiveUserId(db);
+  if (state.userId !== previousUserId) {
+    await rekeyLocalUserData(db, previousUserId, state.userId);
+  }
+
   await saveLocalAuthSession(db, {
     userId: state.userId,
     username: state.username,
@@ -289,7 +303,9 @@ export async function loginWithCredentials(
 
 /**
  * Upgrade path: secures an existing (pre-auth) local profile with a username +
- * password without losing any local data. The local user id is kept.
+ * password without losing any local data. The local user id is kept unless the
+ * server already sees it owned by another account, in which case the server
+ * returns a fresh id and `registerAccount` re-binds the device to it.
  */
 export async function upgradeAccount(
   db: SQLiteDatabase,

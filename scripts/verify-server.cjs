@@ -716,6 +716,38 @@ async function main() {
   // --- 5. Auth behaviour ----------------------------------------------------
   console.log('\nauthentication behaviour');
 
+  await check('registering with a pre-auth user id that has no credentials upgrades it in place', async () => {
+    // A client row created by a pre-auth sync: no client_credentials row yet.
+    const legacyId = 'usr_legacy_preauth';
+    const now = new Date().toISOString();
+    server.db
+      .prepare(
+        `INSERT INTO clients (user_id, locale, profile_json, billing_json, created_at, updated_at)
+         VALUES (?, 'hu', ?, NULL, ?, ?);`,
+      )
+      .run(legacyId, JSON.stringify({ ...onboarding, userId: legacyId }), now, now);
+
+    const res = await http(`${apiBase}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'legacy.joska',
+        password: 'legacy-jelszo-1',
+        userId: legacyId,
+        profile: { ...onboarding, userId: legacyId },
+      }),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.userId, legacyId, 'the existing id is reused, not replaced');
+    assert.equal(res.body.profile.userId, legacyId);
+    assert.equal(res.body.profile.biometrics.weightKg, 78.5);
+
+    const clients = server.db
+      .prepare('SELECT COUNT(*) AS count FROM clients WHERE user_id = ?;')
+      .get(legacyId);
+    assert.equal(clients.count, 1, 'no duplicate client row was created');
+  });
+
   await check('POST /api/auth/register rejects a duplicate username (case-insensitive)', async () => {
     const res = await http(`${apiBase}/api/auth/register`, {
       method: 'POST',
@@ -724,6 +756,154 @@ async function main() {
     });
     assert.equal(res.status, 409);
     assert.ok(String(res.body.error).includes('foglalt'));
+  });
+
+  await check('a duplicate username is rejected even when a new userId is supplied', async () => {
+    const res = await http(`${apiBase}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'ANNA.KOVACS',
+        password: 'mas-jelszo-9',
+        userId: 'usr_brand_new_id',
+      }),
+    });
+    assert.equal(res.status, 409);
+    assert.ok(String(res.body.error).includes('foglalt'));
+  });
+
+  await check('a userId already claimed by another account yields a fresh id, not a 409', async () => {
+    // Regression: a device with pre-isolation local data sends userId = usr_local,
+    // which Anna's account already owns. A brand-new username must still register.
+    const res = await http(`${apiBase}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'kiss.peter',
+        password: 'peter-jelszo-1',
+        userId: userA,
+        profile: {
+          ...onboarding,
+          userId: userA,
+          biometrics: { age: 33, weightKg: 82, heightCm: 176 },
+        },
+      }),
+    });
+    assert.equal(res.status, 201);
+    const newId = res.body.userId;
+    assert.notEqual(newId, userA, 'a fresh id must be minted');
+    assert.match(newId, /^usr_/);
+    assert.equal(res.body.profile.userId, newId, 'snapshot stored under the new id');
+    assert.equal(res.body.profile.biometrics.weightKg, 82);
+    assert.equal(res.body.sessions.length, 0, 'must not inherit the other account rows');
+
+    // Both accounts stay isolated.
+    const pullNew = await http(`${apiBase}/api/sync/pull`, { headers: bearer(res.body.token) });
+    assert.equal(pullNew.status, 200);
+    assert.equal(pullNew.body.userId, newId);
+    assert.equal(pullNew.body.sessions.length, 0);
+    assert.ok(!pullNew.body.sessions.some((s) => s.id === sessionId));
+
+    const pullA6 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenA) });
+    assert.equal(pullA6.body.userId, userA);
+    assert.equal(pullA6.body.sessions.length, 1);
+    assert.equal(pullA6.body.profile.biometrics.weightKg, 78.5, 'A profile untouched');
+    assert.equal(pullA6.body.billingProfile.billingZip, '1052');
+  });
+
+  await check('registerAccount re-keys the device to the server id and keeps local data', async () => {
+    const device = await createFreshClientDatabase();
+    try {
+      // Pre-isolation device: a legacy profile + logs synced under usr_local,
+      // which Anna's account already owns on this server.
+      await repository.saveOnboardingPayload(device.db, onboarding);
+      await repository.saveClientBillingProfile(device.db, billingProfile);
+      await repository.seedDefaultTemplates(device.db);
+      const deviceTemplates = await repository.getWorkoutTemplates(device.db);
+      const deviceStrength = deviceTemplates.find((t) => t.sessionType === 'strength');
+      const deviceSessionId = await repository.startSessionFromTemplate(device.db, deviceStrength);
+      const deviceDetail = await repository.getSessionDetail(device.db, deviceSessionId);
+      await repository.upsertSetLog(device.db, deviceDetail.exerciseBlocks[0].id, {
+        setNumber: 1,
+        setType: 'working',
+        actualWeightKg: 55,
+        actualReps: 10,
+        rpe: 7,
+      });
+      await repository.completeSession(device.db, deviceSessionId);
+      const customTemplate = await repository.createCustomTemplate(device.db, {
+        title: 'Saját re-key sablon',
+        sessionType: 'strength',
+        blocks: [{ exerciseId: 'belt_squat', targetSets: 3, targetReps: '8', restSeconds: 90 }],
+      });
+
+      const state = await authService.registerAccount(
+        device.db,
+        {
+          username: 'nagy.eszter',
+          password: 'eszter-jelszo-1',
+          userId: repository.USER_PROFILE_ID,
+          profile: onboarding,
+          billingProfile,
+        },
+        `${apiBase}/api`,
+      );
+
+      assert.match(state.userId, /^usr_/);
+      assert.notEqual(state.userId, repository.USER_PROFILE_ID);
+      assert.notEqual(state.userId, userA, 'never reuse another account id');
+
+      const localSession = await repository.getLocalAuthSession(device.db);
+      assert.ok(localSession !== null);
+      assert.equal(localSession.userId, state.userId, 'session re-bound to the server id');
+
+      const localProfile = await repository.getUserProfile(device.db);
+      assert.ok(localProfile !== null, 'profile re-keyed to the new id');
+      assert.equal(localProfile.userId, state.userId);
+      assert.equal(localProfile.biometrics.weightKg, 78.5);
+      assert.equal(localProfile.constraints.jointLimitations[0].area, 'knees');
+
+      const localBilling = await repository.getClientBillingProfile(device.db);
+      assert.equal(localBilling.userId, state.userId);
+      assert.equal(localBilling.billingZip, '1052');
+
+      const history = await repository.getSessionHistory(device.db);
+      assert.equal(history.length, 1, 'local workout logs survive the re-key');
+      assert.ok(
+        (await repository.getWorkoutTemplates(device.db)).some((t) => t.id === customTemplate.id),
+        'custom template survives the re-key',
+      );
+
+      // The very first push after registering lands in the new account only.
+      const pushC = await http(`${apiBase}/api/sync/push`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localSession.token}`,
+        },
+        body: JSON.stringify(await buildClientSyncPushPayload(device.db)),
+      });
+      assert.equal(pushC.status, 200);
+      assert.equal(pushC.body.userId, state.userId);
+
+      const pullC = await http(`${apiBase}/api/sync/pull`, {
+        headers: bearer(localSession.token),
+      });
+      assert.equal(pullC.body.userId, state.userId);
+      assert.equal(pullC.body.profile.userId, state.userId);
+      assert.equal(pullC.body.billingProfile.billingZip, '1052');
+      assert.equal(pullC.body.sessions.length, 1);
+      assert.ok(
+        !pullC.body.sessions.some((s) => s.id === sessionId),
+        'the other account workout log must not leak in',
+      );
+
+      const pullA7 = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenA) });
+      assert.equal(pullA7.body.sessions.length, 1, 'A keeps exactly its own session');
+      assert.equal(pullA7.body.profile.biometrics.weightKg, 78.5);
+    } finally {
+      device.raw.close();
+    }
   });
 
   await check('POST /api/auth/login accepts a trimmed, case-insensitive username', async () => {

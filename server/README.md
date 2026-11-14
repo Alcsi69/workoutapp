@@ -48,7 +48,7 @@ logs, coach plans/bookings/slots).
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/auth/register` | Create an account, or attach credentials to an existing `userId` (pre-auth profile upgrade). Optional `profile` + `billingProfile` snapshots are stored with it. |
+| `POST` | `/api/auth/register` | Create an account, or attach credentials to an existing `userId` (pre-auth profile upgrade). Only a duplicate username is a conflict (409); a `userId` already owned by another account is replaced by a freshly minted id in the response. Optional `profile` + `billingProfile` snapshots are stored with it. |
 | `POST` | `/api/auth/login` | Verify username + password and return the token and full sync state. |
 
 ### Client sync
