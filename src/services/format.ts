@@ -79,3 +79,24 @@ export function formatOneRepMaxKg(oneRepMaxKg: number): string {
   }
   return `${oneRepMaxKg.toFixed(1).replace('.', ',')} ${hu.common.kg}`;
 }
+
+/**
+ * Renders a template block's prescription, e.g. "4 × 5 @ 87,5 kg", "3 × AMRAP",
+ * or "3 × 8-12 @ BW". A plain numeric weight gets a unit and a Hungarian comma;
+ * any other notation ("BW", "25; 20; 15", "75%") is shown verbatim.
+ */
+export function formatTargetPrescription(
+  targetSets?: number,
+  targetReps?: string,
+  targetWeight?: string,
+): string {
+  const reps = `${targetSets ?? 1} × ${targetReps ?? '—'}`;
+  if (targetWeight === undefined || targetWeight.trim().length === 0) {
+    return reps;
+  }
+  const raw = targetWeight.trim();
+  const shown = /^\d+(?:[.,]\d+)?$/.test(raw)
+    ? `${raw.replace('.', ',')} ${hu.common.kg}`
+    : raw;
+  return `${reps} @ ${shown}`;
+}

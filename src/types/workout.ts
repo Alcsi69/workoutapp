@@ -160,6 +160,8 @@ export interface WorkoutExerciseBlock {
   /** Prescription copied from the template (absent for ad-hoc blocks). */
   targetSets?: number;
   targetReps?: string;
+  /** Raw weight prescription copied from the template, e.g. "87.5", "BW", "25; 20; 15". */
+  targetWeight?: string;
   sets: SetLog[];
 }
 
@@ -210,6 +212,8 @@ export interface TemplateExerciseBlock {
   notes?: string;
   targetSets?: number;
   targetReps?: string;
+  /** Raw weight prescription, e.g. "87.5", "BW", "25; 20; 15", "75%". */
+  targetWeight?: string;
 }
 
 export interface WorkoutTemplate {
@@ -242,6 +246,8 @@ export interface CustomTemplateBlockInput {
   targetSets?: number;
   /** Free-form rep prescription, e.g. "6-8". Defaults to "8-10". */
   targetReps?: string;
+  /** Free-form weight prescription, e.g. "87.5", "BW", "25; 20; 15". */
+  targetWeight?: string;
   /** Defaults to 90. */
   restSeconds?: number;
   notes?: string;
@@ -338,6 +344,13 @@ export interface CoachSyncPullResponse {
   profile?: OnboardingPayload | null;
   billingProfile?: ClientBillingProfile | null;
   sessions?: WorkoutSessionLog[];
+  /**
+   * Imported (custom) exercises the coach's plans reference. Sent so a client
+   * can add them to its local catalog before hydrating the assigned blocks —
+   * without this a sheet-imported exercise would be silently dropped by the
+   * catalog join. Optional so older servers stay compatible.
+   */
+  catalog?: ExerciseCatalogItem[];
 }
 
 /**

@@ -24,8 +24,23 @@ import type {
   WorkoutTemplate,
   WorkoutTemplateExercise,
 } from './types';
-import { EXERCISE_CATALOG } from './catalog';
-import { allRows, firstRow, runSql, type ServerDb, type SqlParam } from './db';
+import {
+  allRows,
+  findCatalogItemByName,
+  firstRow,
+  getCatalogItem,
+  listCatalogItems,
+  runSql,
+  upsertImportedExercise,
+  type ServerDb,
+  type SqlParam,
+} from './db';
+import {
+  googleSheetCsvUrl,
+  parseGoogleSheetUrl,
+  parseWorkoutSheet,
+  type ParsedSheetDay,
+} from './sheetImport';
 import {
   createAuthToken,
   hashPassword,
@@ -36,10 +51,6 @@ import {
   validateUsername,
   verifyPassword,
 } from './auth';
-
-const CATALOG_BY_ID = new Map<string, ExerciseCatalogItem>(
-  EXERCISE_CATALOG.map((item) => [item.id, item]),
-);
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
@@ -129,6 +140,8 @@ interface StoredBlock {
   notes?: string;
   targetSets?: number;
   targetReps?: string;
+  /** Raw weight prescription from an import, e.g. "87.5", "BW", "25; 20; 15". */
+  targetWeight?: string;
   substitutedFromExerciseId?: string;
 }
 
@@ -277,9 +290,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 // --- Domain mapping ---------------------------------------------------------
 
+type CatalogIndex = Map<string, ExerciseCatalogItem>;
+
+/** Builds an id -> catalog item index from the DB-backed vocabulary. */
+function catalogIndex(db: ServerDb): CatalogIndex {
+  return new Map(listCatalogItems(db).map((item) => [item.id, item]));
+}
+
 /** Falls back to a minimal catalog entry for an unknown exercise id. */
-function hydrateExercise(exerciseId: string): ExerciseCatalogItem {
-  const found = CATALOG_BY_ID.get(exerciseId);
+function hydrateExercise(catalog: CatalogIndex, exerciseId: string): ExerciseCatalogItem {
+  const found = catalog.get(exerciseId);
   if (found !== undefined) {
     return found;
   }
@@ -298,7 +318,7 @@ function hydrateExercise(exerciseId: string): ExerciseCatalogItem {
   };
 }
 
-function toWorkoutTemplate(row: TemplateRow): WorkoutTemplate {
+function toWorkoutTemplate(row: TemplateRow, catalog: CatalogIndex): WorkoutTemplate {
   let stored: StoredBlock[] = [];
   try {
     stored = JSON.parse(row.blocks_json) as StoredBlock[];
@@ -316,7 +336,7 @@ function toWorkoutTemplate(row: TemplateRow): WorkoutTemplate {
         orderIndex: index,
         exerciseId: block.exerciseId,
         restSeconds: block.restSeconds,
-        exercise: hydrateExercise(block.exerciseId),
+        exercise: hydrateExercise(catalog, block.exerciseId),
       };
       if (block.substitutedFromExerciseId !== undefined) {
         mapped.substitutedFromExerciseId = block.substitutedFromExerciseId;
@@ -329,6 +349,9 @@ function toWorkoutTemplate(row: TemplateRow): WorkoutTemplate {
       }
       if (block.targetReps !== undefined) {
         mapped.targetReps = block.targetReps;
+      }
+      if (block.targetWeight !== undefined) {
+        mapped.targetWeight = block.targetWeight;
       }
       return mapped;
     });
@@ -415,21 +438,29 @@ function listClients(db: ServerDb): ClientRow[] {
 
 /** The client's own plans plus intentional global defaults (`user_id IS NULL`). */
 function listTemplates(db: ServerDb, userId: string): WorkoutTemplate[] {
+  const catalog = catalogIndex(db);
   return allRows<TemplateRow>(
     db,
     `SELECT * FROM coach_templates
       WHERE user_id = ? OR user_id IS NULL
       ORDER BY assigned_at DESC, created_at DESC;`,
     [userId],
-  ).map(toWorkoutTemplate);
+  ).map((row) => toWorkoutTemplate(row, catalog));
 }
 
 /** Only the intentional system-wide defaults, used by the admin global view. */
 function listGlobalTemplates(db: ServerDb): WorkoutTemplate[] {
+  const catalog = catalogIndex(db);
   return allRows<TemplateRow>(
     db,
     'SELECT * FROM coach_templates WHERE user_id IS NULL ORDER BY assigned_at DESC, created_at DESC;',
-  ).map(toWorkoutTemplate);
+  ).map((row) => toWorkoutTemplate(row, catalog));
+}
+
+/** One template row by id (or null), hydrated. */
+function getTemplate(db: ServerDb, id: string): WorkoutTemplate | null {
+  const row = firstRow<TemplateRow>(db, 'SELECT * FROM coach_templates WHERE id = ? LIMIT 1;', [id]);
+  return row === null ? null : toWorkoutTemplate(row, catalogIndex(db));
 }
 
 function listSessions(db: ServerDb, userId: string): WorkoutSessionLog[] {
@@ -718,6 +749,9 @@ function handlePull(db: ServerDb, userId: string): CoachSyncPullResponse {
     profile: client === null ? null : parseProfile(client.profile_json),
     billingProfile: client === null ? null : parseBilling(client.billing_json),
     sessions: listSessions(db, userId),
+    // Imported (custom) exercises travel with the pull so the client can add
+    // them to its local catalog before hydrating the assigned blocks.
+    catalog: listCatalogItems(db).filter((item) => item.isCustom),
   };
 }
 
@@ -953,6 +987,34 @@ function invoiceCsv(exportData: InvoiceExport): string {
 /** Admin route segment that creates/updates an intentional global default. */
 const GLOBAL_TEMPLATE_SCOPE = '__global__';
 
+/** Parses + validates the `blocks` array shared by create and update. */
+function parseStoredBlocks(db: ServerDb, input: Record<string, unknown>): StoredBlock[] {
+  const rawBlocks = input.blocks;
+  if (!Array.isArray(rawBlocks) || rawBlocks.length === 0) {
+    throw new HttpError(400, 'A sablonhoz legalább egy gyakorlat szükséges.');
+  }
+  return rawBlocks.map((raw, index) => {
+    const block = asRecord(raw);
+    const exerciseId = asString(block.exerciseId, 'blocks[].exerciseId');
+    if (getCatalogItem(db, exerciseId) === null) {
+      throw new HttpError(400, `Ismeretlen gyakorlat: "${exerciseId}".`);
+    }
+    const stored: StoredBlock = {
+      orderIndex: index,
+      exerciseId,
+      restSeconds: typeof block.restSeconds === 'number' ? block.restSeconds : 90,
+    };
+    const notes = optionalString(block.notes);
+    if (notes !== undefined) stored.notes = notes;
+    if (typeof block.targetSets === 'number') stored.targetSets = block.targetSets;
+    const targetReps = optionalString(block.targetReps);
+    if (targetReps !== undefined) stored.targetReps = targetReps;
+    const targetWeight = optionalString(block.targetWeight);
+    if (targetWeight !== undefined) stored.targetWeight = targetWeight;
+    return stored;
+  });
+}
+
 function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): WorkoutTemplate {
   const input = asRecord(body);
   // `__global__` is the admin's explicit "system-wide default" marker; the row
@@ -960,30 +1022,7 @@ function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): Work
   const targetUserId = userId === GLOBAL_TEMPLATE_SCOPE ? null : userId;
   const title = asString(input.title, 'title');
   const sessionType = (optionalString(input.sessionType) ?? 'strength') as SessionType;
-  const rawBlocks = input.blocks;
-  if (!Array.isArray(rawBlocks) || rawBlocks.length === 0) {
-    throw new HttpError(400, 'A sablonhoz legalább egy gyakorlat szükséges.');
-  }
-
-  const blocks: StoredBlock[] = rawBlocks.map((raw, index) => {
-    const block = asRecord(raw);
-    const exerciseId = asString(block.exerciseId, 'blocks[].exerciseId');
-    if (!CATALOG_BY_ID.has(exerciseId)) {
-      throw new HttpError(400, `Ismeretlen gyakorlat: "${exerciseId}".`);
-    }
-    const stored: StoredBlock = {
-      orderIndex: index,
-      exerciseId,
-      restSeconds:
-        typeof block.restSeconds === 'number' ? block.restSeconds : 90,
-    };
-    const notes = optionalString(block.notes);
-    if (notes !== undefined) stored.notes = notes;
-    if (typeof block.targetSets === 'number') stored.targetSets = block.targetSets;
-    const targetReps = optionalString(block.targetReps);
-    if (targetReps !== undefined) stored.targetReps = targetReps;
-    return stored;
-  });
+  const blocks = parseStoredBlocks(db, input);
 
   const id = optionalString(input.id) ?? createId('tpl_coach');
   const now = nowIso();
@@ -1021,9 +1060,50 @@ function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): Work
     [id, targetUserId, title, sessionType, goal, coachNote, now, createdAt, JSON.stringify(blocks)],
   );
 
-  const template = listTemplates(db, userId).find((entry) => entry.id === id);
-  if (template === undefined) {
+  const template = getTemplate(db, id);
+  if (template === null) {
     throw new HttpError(500, 'A sablon mentése sikertelen.');
+  }
+  return template;
+}
+
+/**
+ * `PUT` / `PATCH /api/admin/templates/:id` — updates an existing template in
+ * place: title, session type, coach note and every block are replaced with the
+ * submitted values, while the row's owner (client vs global) is preserved.
+ * An omitted field keeps its stored value; sending an empty `coachNote` clears it.
+ */
+function handleUpdateTemplate(db: ServerDb, templateId: string, body: unknown): WorkoutTemplate {
+  const existing = firstRow<TemplateRow>(
+    db,
+    'SELECT * FROM coach_templates WHERE id = ? LIMIT 1;',
+    [templateId],
+  );
+  if (existing === null) {
+    throw new HttpError(404, 'Ismeretlen sablon.');
+  }
+  const input = asRecord(body);
+  const title = optionalString(input.title) ?? existing.title;
+  const sessionType = (optionalString(input.sessionType) ?? existing.session_type) as SessionType;
+  const goal = Object.prototype.hasOwnProperty.call(input, 'goal')
+    ? (optionalString(input.goal) ?? null)
+    : existing.goal;
+  const coachNote = Object.prototype.hasOwnProperty.call(input, 'coachNote')
+    ? (optionalString(input.coachNote) ?? null)
+    : existing.coach_note;
+  const blocks = parseStoredBlocks(db, input);
+
+  runSql(
+    db,
+    `UPDATE coach_templates
+       SET title = ?, session_type = ?, goal = ?, coach_note = ?, assigned_at = ?, blocks_json = ?
+     WHERE id = ?;`,
+    [title, sessionType, goal, coachNote, nowIso(), JSON.stringify(blocks), templateId],
+  );
+
+  const template = getTemplate(db, templateId);
+  if (template === null) {
+    throw new HttpError(500, 'A sablon frissítése sikertelen.');
   }
   return template;
 }
@@ -1031,6 +1111,190 @@ function handleCreateTemplate(db: ServerDb, userId: string, body: unknown): Work
 function handleDeleteTemplate(db: ServerDb, templateId: string): { deleted: boolean } {
   const result = db.prepare('DELETE FROM coach_templates WHERE id = ?;').run(templateId);
   return { deleted: Number(result.changes) > 0 };
+}
+
+// --- Admin: Google Sheets / CSV import --------------------------------------
+
+interface ImportedDayResult {
+  day: string;
+  templateId: string;
+  title: string;
+  exerciseCount: number;
+}
+
+interface ImportResult {
+  userId: string;
+  days: ImportedDayResult[];
+  createdExercises: ExerciseCatalogItem[];
+}
+
+/** Slugifies a free-form day/id fragment into a stable, id-safe token. */
+function slugToken(value: string): string {
+  const token = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return token.length > 0 ? token : 'x';
+}
+
+/** Deterministic template id so re-importing a sheet updates the same rows. */
+function importTemplateId(userId: string, day: string): string {
+  return `tpl_sheet_${slugToken(userId)}_${slugToken(day)}`;
+}
+
+/** Builds a minimal catalog entry for an exercise the sheet mentions but the catalog lacks. */
+function createImportedExercise(name: string): ExerciseCatalogItem {
+  return {
+    id: `cust_sheet_${slugToken(name)}`,
+    nameHu: name,
+    nameEn: name,
+    category: 'isolation',
+    equipment: 'barbell',
+    movementPattern: 'other',
+    primaryMuscles: [],
+    axialLoadScore: 1,
+    kneeStressScore: 1,
+    defaultSubstituteIds: [],
+    isCustom: true,
+  };
+}
+
+/**
+ * Resolves one parsed sheet exercise to a catalog id, auto-creating (and
+ * persisting) a catalog entry the first time an unknown exercise appears so the
+ * import never fails. Case-insensitive on the Hungarian/English name and id.
+ */
+function resolveSheetExercise(
+  db: ServerDb,
+  name: string,
+  created: Map<string, ExerciseCatalogItem>,
+): ExerciseCatalogItem {
+  const key = name.trim().toLowerCase();
+  const already = created.get(key);
+  if (already !== undefined) {
+    return already;
+  }
+  const existing = findCatalogItemByName(db, name);
+  if (existing !== null) {
+    created.set(key, existing);
+    return existing;
+  }
+  const item = createImportedExercise(name);
+  upsertImportedExercise(db, item);
+  created.set(key, item);
+  return item;
+}
+
+/** Turns one parsed day into a stored template assigned to `userId`. */
+function dayToTemplate(
+  db: ServerDb,
+  userId: string,
+  day: ParsedSheetDay,
+  created: Map<string, ExerciseCatalogItem>,
+): ImportedDayResult {
+  const id = importTemplateId(userId, day.day);
+  const blocks: StoredBlock[] = day.exercises.map((exercise, index) => {
+    const catalogItem = resolveSheetExercise(db, exercise.name, created);
+    const noteParts: string[] = [];
+    if (exercise.prescription !== undefined) {
+      noteParts.push(`Előírás: ${exercise.prescription}`);
+    }
+    if (exercise.notes !== undefined) {
+      noteParts.push(exercise.notes);
+    }
+    const block: StoredBlock = {
+      orderIndex: index,
+      exerciseId: catalogItem.id,
+      restSeconds: 90,
+      targetSets: exercise.targetSets,
+      targetReps: exercise.targetReps.length > 0 ? exercise.targetReps : '—',
+    };
+    if (noteParts.length > 0) {
+      block.notes = noteParts.join(' · ');
+    }
+    if (exercise.weightRaw !== undefined) {
+      block.targetWeight = exercise.weightRaw;
+    }
+    return block;
+  });
+
+  const now = nowIso();
+  runSql(
+    db,
+    `INSERT INTO coach_templates
+       (id, user_id, title, session_type, goal, coach_note, assigned_at, created_at, blocks_json)
+     VALUES (?, ?, ?, 'strength', NULL, NULL, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       user_id = excluded.user_id,
+       title = excluded.title,
+       session_type = excluded.session_type,
+       goal = excluded.goal,
+       coach_note = excluded.coach_note,
+       assigned_at = excluded.assigned_at,
+       blocks_json = excluded.blocks_json;`,
+    [id, userId, day.title, now, now, JSON.stringify(blocks)],
+  );
+
+  return { day: day.day, templateId: id, title: day.title, exerciseCount: blocks.length };
+}
+
+/** Fetches the CSV export of a Google Sheets document (best-effort network). */
+async function fetchGoogleSheetCsv(url: string): Promise<string> {
+  const ref = parseGoogleSheetUrl(url);
+  if (ref === null) {
+    throw new HttpError(400, 'Érvénytelen Google Sheets link.');
+  }
+  let response: Response;
+  try {
+    response = await fetch(googleSheetCsvUrl(ref));
+  } catch (cause: unknown) {
+    throw new HttpError(502, `A táblázat letöltése sikertelen: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+  if (!response.ok) {
+    throw new HttpError(
+      502,
+      `A táblázat nem érhető el (HTTP ${response.status}). Oszd meg nyilvánosan, vagy illeszd be a tartalmat.`,
+    );
+  }
+  return response.text();
+}
+
+/**
+ * `POST /api/admin/clients/:userId/import-sheet` — imports a multi-day workout
+ * sheet (a Google Sheets URL or pasted CSV/TSV) as one coach template per day
+ * assigned to the client. Missing exercises are auto-created in the catalog.
+ */
+async function handleImportSheet(db: ServerDb, userId: string, body: unknown): Promise<ImportResult> {
+  if (getClient(db, userId) === null) {
+    throw new HttpError(404, 'Ismeretlen ügyfél.');
+  }
+  const input = asRecord(body);
+  const url = optionalString(input.url);
+  const pasted = optionalString(input.text) ?? optionalString(input.csv);
+
+  let text: string;
+  if (pasted !== undefined) {
+    text = pasted;
+  } else if (url !== undefined) {
+    text = await fetchGoogleSheetCsv(url);
+  } else {
+    throw new HttpError(400, 'Adj meg Google Sheets linket vagy beillesztett táblázatot.');
+  }
+
+  const sheet = parseWorkoutSheet(text);
+  if (sheet.days.length === 0) {
+    throw new HttpError(400, 'A táblázat nem tartalmaz feldolgozható napot (oszlop A).');
+  }
+
+  const created = new Map<string, ExerciseCatalogItem>();
+  const days = sheet.days.map((day) => dayToTemplate(db, userId, day, created));
+
+  return {
+    userId,
+    days,
+    createdExercises: Array.from(created.values()).filter((item) => item.isCustom),
+  };
 }
 
 // --- Admin: slots & bookings ------------------------------------------------
@@ -1146,6 +1410,7 @@ function serveStatic(res: ServerResponse, adminDir: string, relPath: string): bo
 const CLIENT_DETAIL_RE = /^\/api\/admin\/clients\/([^/]+)$/;
 const CLIENT_INVOICE_RE = /^\/api\/admin\/clients\/([^/]+)\/invoice-export$/;
 const CLIENT_TEMPLATES_RE = /^\/api\/admin\/clients\/([^/]+)\/templates$/;
+const CLIENT_IMPORT_RE = /^\/api\/admin\/clients\/([^/]+)\/import-sheet$/;
 const TEMPLATE_RE = /^\/api\/admin\/templates\/([^/]+)$/;
 const SLOT_RE = /^\/api\/admin\/slots\/([^/]+)$/;
 const BOOKING_RE = /^\/api\/admin\/bookings\/([^/]+)$/;
@@ -1182,7 +1447,7 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
       ok: true,
       service: 'workoutapp-coach-server',
       clients: listClients(db).length,
-      exercises: EXERCISE_CATALOG.length,
+      exercises: listCatalogItems(db).length,
       producedAt: nowIso(),
     });
     return;
@@ -1226,7 +1491,8 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
 
   // ---- Admin: exercise catalog --------------------------------------------
   if (method === 'GET' && path === '/api/admin/exercises') {
-    sendJson(res, 200, { count: EXERCISE_CATALOG.length, exercises: EXERCISE_CATALOG });
+    const exercises = listCatalogItems(db);
+    sendJson(res, 200, { count: exercises.length, exercises });
     return;
   }
 
@@ -1302,9 +1568,23 @@ async function route(db: ServerDb, options: AppOptions, req: IncomingMessage, re
     return;
   }
 
+  // ---- Admin: Google Sheets / CSV import ----------------------------------
+  const importSheet = CLIENT_IMPORT_RE.exec(path);
+  if (method === 'POST' && importSheet !== null) {
+    const userId = decodeURIComponent(importSheet[1]);
+    const body = await readBody(req);
+    sendJson(res, 201, await handleImportSheet(db, userId, body));
+    return;
+  }
+
   const template = TEMPLATE_RE.exec(path);
   if (method === 'DELETE' && template !== null) {
     sendJson(res, 200, handleDeleteTemplate(db, decodeURIComponent(template[1])));
+    return;
+  }
+  if ((method === 'PUT' || method === 'PATCH') && template !== null) {
+    const body = await readBody(req);
+    sendJson(res, 200, { template: handleUpdateTemplate(db, decodeURIComponent(template[1]), body) });
     return;
   }
 
@@ -1353,7 +1633,7 @@ export function createApp(db: ServerDb, options: AppOptions = {}): HttpHandler {
     } else if (typeof origin === 'string' && allowedOrigins.includes(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization');
     res.setHeader('Access-Control-Max-Age', '86400');
 

@@ -12,6 +12,8 @@ const state = {
   selectedClientId: null,
   builderBlocks: [],
   exerciseFilter: 'all',
+  /** Template id currently being edited in the builder (null = creating). */
+  editingId: null,
 };
 
 // ---- Tiny DOM / fetch helpers ---------------------------------------------
@@ -46,6 +48,30 @@ function esc(value) {
     .replace(/'/g, '&#39;');
 }
 
+// A 401 can hit several concurrent api() calls at once (e.g. a Promise.all in
+// the overview). window.prompt is blocking, so without this guard each 401 would
+// stack its own prompt. The in-flight promise is shared: the first 401 opens one
+// prompt and every other 401 awaits the same answer before retrying.
+let tokenPromptPromise = null;
+
+function promptForToken(initial) {
+  if (tokenPromptPromise === null) {
+    tokenPromptPromise = Promise.resolve()
+      .then(() => window.prompt('Edzői admin token szükséges:', initial || ''))
+      .then((entered) => {
+        if (entered && entered.trim()) {
+          setAdminToken(entered.trim());
+          return true;
+        }
+        return false;
+      })
+      .finally(() => {
+        tokenPromptPromise = null;
+      });
+  }
+  return tokenPromptPromise;
+}
+
 async function api(path, options, retried) {
   const opts = Object.assign({}, options);
   const headers = Object.assign({}, opts.headers);
@@ -58,9 +84,8 @@ async function api(path, options, retried) {
   // The admin API requires the coach token. Ask for it once and retry so the
   // portal works without a build step or a login screen.
   if (response.status === 401 && retried !== true) {
-    const entered = window.prompt('Edzői admin token szükséges:', token || '');
-    if (entered && entered.trim()) {
-      setAdminToken(entered.trim());
+    const updated = await promptForToken(token);
+    if (updated) {
       return api(path, options, true);
     }
   }
@@ -413,7 +438,11 @@ async function openClient(userId) {
         <div class="item">
           <div class="row">
             <h3>${esc(t.title)}</h3>
-            <span class="pill accent">${t.exercises.length} gyakorlat</span>
+            <div class="row" style="gap:6px;">
+              <span class="pill accent">${t.exercises.length} gyakorlat</span>
+              <button class="btn small" data-edit-tpl="${esc(t.id)}">Szerkesztés</button>
+              <button class="btn small danger" data-del-tpl="${esc(t.id)}">Törlés</button>
+            </div>
           </div>
           ${t.coachNote ? `<div class="row muted">${esc(t.coachNote)}</div>` : ''}
           <div class="row">${t.exercises
@@ -506,6 +535,19 @@ async function openClient(userId) {
       }),
     );
 
+    // Edit / delete an assigned plan straight from the client detail.
+    $$('#clientDetail [data-edit-tpl]').forEach((node) =>
+      node.addEventListener('click', () => {
+        const template = detail.templates.find((entry) => entry.id === node.dataset.editTpl);
+        if (template) beginEdit(template, userId2);
+      }),
+    );
+    $$('#clientDetail [data-del-tpl]').forEach((node) =>
+      node.addEventListener('click', () =>
+        deleteTemplateById(node.dataset.delTpl, () => openClient(userId2)),
+      ),
+    );
+
     $('#clientDetail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     toast(e.message, true);
@@ -563,14 +605,25 @@ async function loadBuilder() {
   }
 
   const select = $('#builderClient');
+  // Default to a real registered client rather than the global scope: coaches
+  // assign plans to people, and the global scope is a rare, explicit choice.
+  const clientOptions = state.clients
+    .map((c) => `<option value="${esc(c.userId)}">${esc(c.fullName || c.userId)}</option>`)
+    .join('');
   select.innerHTML =
-    `<option value="__global__">Globális alapértelmezett (minden ügyfél)</option>` +
-    state.clients
-      .map((c) => `<option value="${esc(c.userId)}">${esc(c.fullName || c.userId)}</option>`)
-      .join('');
-  if (state.selectedClientId) select.value = state.selectedClientId;
+    clientOptions +
+    `<option value="__global__">Globális alapértelmezett (minden ügyfél)</option>`;
+  const fallback = state.clients.length > 0 ? state.clients[0].userId : '__global__';
+  if (state.selectedClientId) {
+    select.value = state.selectedClientId;
+  } else {
+    select.value = fallback;
+  }
+  state.selectedClientId = select.value;
   select.onchange = () => {
     state.selectedClientId = select.value;
+    state.editingId = null;
+    updateBuilderMode();
     renderExistingTemplates();
   };
 
@@ -580,9 +633,37 @@ async function loadBuilder() {
   });
   $('#exerciseSearch').oninput = renderExercisePicker;
   $('#builderSave').onclick = saveTemplate;
+  $('#builderCancel').onclick = cancelEdit;
+  $('#importUrlBtn').onclick = () => importSheet('url');
+  $('#importTextBtn').onclick = () => importSheet('text');
+  updateBuilderMode();
   renderExercisePicker();
   renderBuilderBlocks();
   renderExistingTemplates();
+}
+
+/**
+ * Reflects the builder's create-vs-edit mode: the save button label and the
+ * visibility of the "Mégse / Új terv" escape hatch.
+ */
+function updateBuilderMode() {
+  const editing = state.editingId !== null;
+  const save = $('#builderSave');
+  if (save) save.textContent = editing ? 'Módosítások mentése' : 'Terv kiosztása';
+  const cancel = $('#builderCancel');
+  if (cancel) cancel.hidden = !editing;
+}
+
+/** Resets the builder to "new template" mode and clears the form. */
+function cancelEdit() {
+  state.editingId = null;
+  state.builderBlocks = [];
+  const title = $('#builderTitle');
+  const note = $('#builderNote');
+  if (title) title.value = '';
+  if (note) note.value = '';
+  updateBuilderMode();
+  renderBuilderBlocks();
 }
 
 function renderExercisePicker() {
@@ -634,6 +715,8 @@ function renderBuilderBlocks() {
           <input type="number" min="1" value="${block.targetSets}" data-index="${index}" data-field="targetSets" />
           <label class="muted" style="font-size:11px;">Ismétlés</label>
           <input type="text" value="${esc(block.targetReps)}" data-index="${index}" data-field="targetReps" />
+          <label class="muted" style="font-size:11px;">Súly</label>
+          <input type="text" value="${esc(block.targetWeight || '')}" placeholder="pl. 87,5 / BW / 75%" data-index="${index}" data-field="targetWeight" />
           <label class="muted" style="font-size:11px;">Pihenő (s)</label>
           <input type="number" min="0" value="${block.restSeconds}" data-index="${index}" data-field="restSeconds" />
         </div>
@@ -651,8 +734,8 @@ function renderBuilderBlocks() {
     node.addEventListener('change', () => {
       const index = Number(node.dataset.index);
       const field = node.dataset.field;
-      state.builderBlocks[index][field] =
-        field === 'targetReps' ? node.value : Number(node.value);
+      const numeric = field === 'targetSets' || field === 'restSeconds';
+      state.builderBlocks[index][field] = numeric ? Number(node.value) : node.value;
     }),
   );
 }
@@ -663,27 +746,113 @@ async function saveTemplate() {
   if (!userId) return toast('Válassz ügyfelet.', true);
   if (!title) return toast('A terv neve kötelező.', true);
   if (state.builderBlocks.length === 0) return toast('Adj hozzá legalább egy gyakorlatot.', true);
+  const payload = {
+    title,
+    sessionType: $('#builderType').value,
+    coachNote: $('#builderNote').value.trim() || undefined,
+    blocks: state.builderBlocks,
+  };
   try {
-    const templatePath =
-      userId === '__global__'
-        ? '/api/admin/templates'
-        : `/api/admin/clients/${encodeURIComponent(userId)}/templates`;
-    await api(templatePath, {
+    if (state.editingId !== null) {
+      await api(`/api/admin/templates/${encodeURIComponent(state.editingId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast('Edzői terv módosítva.');
+    } else {
+      const templatePath =
+        userId === '__global__'
+          ? '/api/admin/templates'
+          : `/api/admin/clients/${encodeURIComponent(userId)}/templates`;
+      await api(templatePath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast('Edzői terv kiosztva.');
+    }
+    cancelEdit();
+    renderExistingTemplates();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/**
+ * Loads an existing template into the builder and switches to the Builder tab.
+ * The client selector, title, session type, coach note and every block are
+ * populated so the coach can reorder/edit and save via PUT.
+ */
+async function beginEdit(template, userId) {
+  state.editingId = template.id;
+  if (userId) state.selectedClientId = userId;
+
+  // Activate the builder view without a full reload first, then load it (which
+  // rebuilds the client <select>) and finally populate the editing state.
+  $$('.nav-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.view === 'builder'));
+  $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === 'builder'));
+  await loadBuilder();
+
+  const select = $('#builderClient');
+  if (userId) select.value = userId;
+  $('#builderTitle').value = template.title;
+  $('#builderType').value = template.sessionType || 'strength';
+  $('#builderNote').value = template.coachNote || '';
+  state.builderBlocks = template.exercises
+    .slice()
+    .sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0))
+    .map((block) => ({
+      exerciseId: block.exerciseId,
+      targetSets: block.targetSets || 3,
+      targetReps: block.targetReps || '8-10',
+      targetWeight: block.targetWeight || '',
+      restSeconds: block.restSeconds || 90,
+    }));
+  updateBuilderMode();
+  renderBuilderBlocks();
+  renderExistingTemplates();
+}
+
+/** Deletes a template after a confirmation, then refreshes the given host. */
+async function deleteTemplateById(templateId, onDone) {
+  if (!window.confirm('Biztosan törlöd ezt az edzői tervet?')) return;
+  try {
+    await api(`/api/admin/templates/${encodeURIComponent(templateId)}`, { method: 'DELETE' });
+    toast('Terv törölve.');
+    if (typeof onDone === 'function') onDone();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/** Imports a multi-day sheet as one template per day for the selected client. */
+async function importSheet(source) {
+  const userId = $('#builderClient').value;
+  if (!userId || userId === '__global__') {
+    return toast('Válassz egy konkrét ügyfelet az importáláshoz.', true);
+  }
+  const body = {};
+  if (source === 'url') {
+    const url = $('#importUrl').value.trim();
+    if (!url) return toast('Adj meg egy Google Sheets linket.', true);
+    body.url = url;
+  } else {
+    const text = $('#importText').value;
+    if (!text.trim()) return toast('Illeszd be a táblázat tartalmát.', true);
+    body.text = text;
+  }
+  try {
+    const result = await api(`/api/admin/clients/${encodeURIComponent(userId)}/import-sheet`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        sessionType: $('#builderType').value,
-        coachNote: $('#builderNote').value.trim() || undefined,
-        blocks: state.builderBlocks,
-      }),
+      body: JSON.stringify(body),
     });
-    toast('Edzői terv kiosztva.');
-    state.builderBlocks = [];
-    state.exercises.length && renderBuilderBlocks();
-    $('#builderTitle').value = '';
-    $('#builderNote').value = '';
-    renderBuilderBlocks();
+    const days = Array.isArray(result.days) ? result.days.length : 0;
+    const created = Array.isArray(result.createdExercises) ? result.createdExercises.length : 0;
+    toast(`Importálva: ${days} nap${created > 0 ? `, ${created} új gyakorlat` : ''}.`);
+    $('#importUrl').value = '';
+    $('#importText').value = '';
     renderExistingTemplates();
   } catch (e) {
     toast(e.message, true);
@@ -712,21 +881,24 @@ async function renderExistingTemplates() {
         <div class="item">
           <div class="row">
             <h3>${esc(t.title)}</h3>
-            <button class="btn small danger" data-del="${esc(t.id)}">Törlés</button>
+            <div class="row" style="gap:6px;">
+              <button class="btn small" data-edit="${esc(t.id)}">Szerkesztés</button>
+              <button class="btn small danger" data-del="${esc(t.id)}">Törlés</button>
+            </div>
           </div>
         </div>`,
             )
             .join('');
-    host.querySelectorAll('[data-del]').forEach((node) =>
-      node.addEventListener('click', async () => {
-        try {
-          await api(`/api/admin/templates/${encodeURIComponent(node.dataset.del)}`, { method: 'DELETE' });
-          toast('Terv törölve.');
-          renderExistingTemplates();
-        } catch (e) {
-          toast(e.message, true);
-        }
+    host.querySelectorAll('[data-edit]').forEach((node) =>
+      node.addEventListener('click', () => {
+        const template = templates.find((entry) => entry.id === node.dataset.edit);
+        if (template) beginEdit(template, userId === '__global__' ? null : userId);
       }),
+    );
+    host.querySelectorAll('[data-del]').forEach((node) =>
+      node.addEventListener('click', () =>
+        deleteTemplateById(node.dataset.del, renderExistingTemplates),
+      ),
     );
   } catch (e) {
     toast(e.message, true);
@@ -912,6 +1084,16 @@ function renderCatalogList() {
 function init() {
   $$('.nav-btn').forEach((btn) => btn.addEventListener('click', () => showView(btn.dataset.view)));
   $('#slotCreate').addEventListener('click', createSlot);
+  // Update the stored coach token at any time (and retry the current view).
+  $('#tokenBtn').addEventListener('click', () => {
+    const entered = window.prompt('Edzői admin token:', adminToken());
+    if (entered && entered.trim()) {
+      setAdminToken(entered.trim());
+      toast('Token frissítve.');
+      const active = document.querySelector('.nav-btn.is-active');
+      showView(active && active.dataset.view ? active.dataset.view : 'overview');
+    }
+  });
   // Client list refresh (the browser analog of a pull-to-refresh control): re-fetches
   // the client list, and the open detail panel, straight from the backend.
   $('#clientsRefresh').addEventListener('click', () => {

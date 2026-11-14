@@ -91,6 +91,146 @@ function createDatabase() {
   return { db, raw };
 }
 
+/**
+ * Test fixture: the exact 7 templates an older WorkoutApp build used to seed.
+ * The product no longer ships them (a client starts with an empty list), so the
+ * downstream session tests build their own rows here rather than call a product
+ * seeder that no longer exists.
+ */
+const LEGACY_DEFAULT_TEMPLATES = [
+  {
+    id: 'tpl_upper_a',
+    title: 'Upper A',
+    sessionType: 'strength',
+    goal: 'powerbuilding',
+    blocks: [
+      { exerciseId: 'bench_press', targetSets: 4, targetReps: '6-8', restSeconds: 150 },
+      { exerciseId: 'overhead_press', targetSets: 3, targetReps: '8-10', restSeconds: 120 },
+      { exerciseId: 'barbell_row', targetSets: 4, targetReps: '8-10', restSeconds: 120 },
+      { exerciseId: 'weighted_pullup', targetSets: 3, targetReps: '8-10', restSeconds: 120 },
+    ],
+  },
+  {
+    id: 'tpl_lower_a',
+    title: 'Lower A - Elölguggolás',
+    sessionType: 'strength',
+    goal: 'powerbuilding',
+    blocks: [
+      { exerciseId: 'front_squat', targetSets: 5, targetReps: '5', restSeconds: 180 },
+      { exerciseId: 'romanian_deadlift', targetSets: 3, targetReps: '8-10', restSeconds: 150 },
+      { exerciseId: 'leg_extension', targetSets: 3, targetReps: '12-15', restSeconds: 90 },
+      { exerciseId: 'adductor_machine', targetSets: 3, targetReps: '15-20', restSeconds: 60 },
+    ],
+  },
+  {
+    id: 'tpl_upper_b',
+    title: 'Upper B',
+    sessionType: 'strength',
+    goal: 'powerbuilding',
+    blocks: [
+      {
+        exerciseId: 'bench_press',
+        targetSets: 4,
+        targetReps: '5',
+        restSeconds: 180,
+        notes: 'Csúcssorozat, utána 2 backoff sorozat 8 ismétléssel.',
+      },
+      { exerciseId: 'barbell_row', targetSets: 4, targetReps: '6-8', restSeconds: 150 },
+      { exerciseId: 'overhead_press', targetSets: 3, targetReps: '10-12', restSeconds: 90 },
+      { exerciseId: 'weighted_pullup', targetSets: 3, targetReps: '6-8', restSeconds: 150 },
+    ],
+  },
+  {
+    id: 'tpl_lower_b',
+    title: 'Lower B - Román felhúzás & Öves guggolás',
+    sessionType: 'strength',
+    goal: 'powerbuilding',
+    blocks: [
+      { exerciseId: 'romanian_deadlift', targetSets: 4, targetReps: '6-8', restSeconds: 180 },
+      {
+        exerciseId: 'belt_squat',
+        targetSets: 4,
+        targetReps: '8-10',
+        restSeconds: 150,
+        notes: 'Alacsony tengelyterhelés — térdkímélő guggolás.',
+      },
+      { exerciseId: 'leg_extension', targetSets: 3, targetReps: '12', restSeconds: 90 },
+      { exerciseId: 'adductor_machine', targetSets: 3, targetReps: '15', restSeconds: 60 },
+    ],
+  },
+  {
+    id: 'tpl_run_5k',
+    title: '5 km futás',
+    sessionType: 'running',
+    goal: 'hybrid_strength_running',
+    blocks: [
+      {
+        exerciseId: 'run_5k',
+        targetSets: 1,
+        targetReps: '5 km',
+        restSeconds: 0,
+        notes: 'Könnyű tempó, beszélgetős intenzitás.',
+      },
+    ],
+  },
+  {
+    id: 'tpl_run_7k',
+    title: '7 km futás',
+    sessionType: 'running',
+    goal: 'hybrid_strength_running',
+    blocks: [
+      { exerciseId: 'run_7k', targetSets: 1, targetReps: '7 km', restSeconds: 0, notes: 'Hosszú, egyenletes futás.' },
+    ],
+  },
+  {
+    id: 'tpl_run_tempo',
+    title: '5 km tempó futás',
+    sessionType: 'running',
+    goal: 'hybrid_strength_running',
+    blocks: [
+      {
+        exerciseId: 'run_5k',
+        targetSets: 1,
+        targetReps: '5 km',
+        restSeconds: 0,
+        notes: '1 km bemelegítés + 3 km küszöbtempó + 1 km levezetés.',
+      },
+    ],
+  },
+];
+
+/** Inserts the legacy default templates (fixture only — never a product path). */
+async function seedLegacyDefaultTemplates(db) {
+  const createdAt = '2026-01-01T00:00:00.000Z';
+  for (const seed of LEGACY_DEFAULT_TEMPLATES) {
+    await db.runAsync(
+      'INSERT OR IGNORE INTO workout_templates (id, title, session_type, goal, created_at) VALUES (?, ?, ?, ?, ?);',
+      seed.id,
+      seed.title,
+      seed.sessionType,
+      seed.goal,
+      createdAt,
+    );
+    for (let index = 0; index < seed.blocks.length; index += 1) {
+      const block = seed.blocks[index];
+      await db.runAsync(
+        `INSERT OR IGNORE INTO template_exercise_blocks
+           (id, template_id, order_index, exercise_id, substituted_from_exercise_id,
+            rest_seconds, notes, target_sets, target_reps)
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?);`,
+        `${seed.id}:${index}`,
+        seed.id,
+        index,
+        block.exerciseId,
+        block.restSeconds,
+        block.notes ?? null,
+        block.targetSets,
+        block.targetReps,
+      );
+    }
+  }
+}
+
 const checks = [];
 
 async function check(name, fn) {
@@ -146,14 +286,26 @@ async function main() {
     assert.equal(row.knee_stress_score, 3);
   });
 
-  await check('seedDefaultTemplates inserts the 7 default templates', async () => {
-    const inserted = await repository.seedDefaultTemplates(db);
-    assert.equal(inserted, 7);
+  await check('a fresh client database has NO default templates (empty plan list)', () => {
+    const count = raw.prepare('SELECT COUNT(*) AS count FROM workout_templates').get().count;
+    assert.equal(count, 0, 'clients must start with an empty template list');
   });
 
-  await check('seedDefaultTemplates is idempotent', async () => {
-    const inserted = await repository.seedDefaultTemplates(db);
-    assert.equal(inserted, 0);
+  // Fixture: populate the legacy defaults so the downstream session tests have
+  // plans to run. This is test-only — the product never seeds them.
+  await seedLegacyDefaultTemplates(db);
+
+  await check('legacy default templates fixture inserted the 7 templates', () => {
+    const count = raw.prepare('SELECT COUNT(*) AS count FROM workout_templates').get().count;
+    assert.equal(count, 7);
+  });
+
+  await check('removeDefaultTemplates clears the seeded default templates', async () => {
+    const removed = await repository.removeDefaultTemplates(db);
+    assert.equal(removed, 7);
+    assert.equal(raw.prepare('SELECT COUNT(*) AS count FROM workout_templates').get().count, 0);
+    // Re-seed for the rest of the suite.
+    await seedLegacyDefaultTemplates(db);
   });
 
   await check('template blocks are seeded exactly once (19)', () => {

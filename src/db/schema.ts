@@ -23,7 +23,7 @@ import type {
   TrainingGoal,
 } from '../types/workout';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export interface Migration {
   version: number;
@@ -261,6 +261,18 @@ export const migrations: Migration[] = [
       );`,
     ],
   },
+  {
+    version: 7,
+    statements: [
+      // --- Weight prescription on template + session blocks ------------------
+      // Coach sheets prescribe an exact load per exercise ("87,5", "BW",
+      // "25; 20; 15"). It is a free-form string (not a number) so percentage
+      // and multi-set notations survive, and is copied onto the session block
+      // when a workout starts so the logger can show the target weight.
+      `ALTER TABLE template_exercise_blocks ADD COLUMN target_weight TEXT;`,
+      `ALTER TABLE session_exercise_blocks ADD COLUMN target_weight TEXT;`,
+    ],
+  },
 ];
 
 /**
@@ -333,6 +345,7 @@ export interface SessionExerciseBlockRow {
   notes: string | null;
   target_sets: number | null;
   target_reps: string | null;
+  target_weight: string | null;
 }
 
 /** Session block joined with its catalog entry (used by getSessionDetail). */
@@ -421,6 +434,7 @@ export interface TemplateExerciseBlockRow {
   notes: string | null;
   target_sets: number | null;
   target_reps: string | null;
+  target_weight: string | null;
 }
 
 /** Template block joined with its catalog entry (used by getWorkoutTemplates). */

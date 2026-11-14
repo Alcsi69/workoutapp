@@ -28,6 +28,7 @@ import type {
 } from '../types/workout';
 import type { TemplateProgramSeed } from '../db/repository';
 import {
+  DEFAULT_TEMPLATE_IDS,
   deleteTemplatesByIds,
   getClientBillingProfile,
   getExerciseCatalog,
@@ -40,37 +41,12 @@ import {
 
 // --- Template identity ------------------------------------------------------
 //
-// The generator owns these ids. Templates with these ids are (re)built from the
-// profile; anything else (user-created `tpl_user_*`) is left in place but still
-// swept by the constraint engine.
+// The generator owns a fixed set of template ids. Templates with these ids are
+// (re)built from the profile; anything else (user-created `tpl_user_*`) is left
+// in place but still swept by the constraint engine. The canonical id list lives
+// in the repository so the startup cleanup and the generator can never diverge.
 
-const STRENGTH_TEMPLATE_IDS = [
-  'tpl_full_a',
-  'tpl_full_b',
-  'tpl_upper_a',
-  'tpl_lower_a',
-  'tpl_upper_b',
-  'tpl_lower_b',
-] as const;
-
-const RUNNING_TEMPLATE_IDS = [
-  'tpl_run_1',
-  'tpl_run_2',
-  'tpl_run_3',
-  'tpl_run_4',
-  'tpl_run_5',
-  'tpl_run_6',
-  'tpl_run_7',
-] as const;
-
-/** Running ids used by earlier seed versions; deleted so they never duplicate. */
-const LEGACY_TEMPLATE_IDS = ['tpl_run_5k', 'tpl_run_7k', 'tpl_run_tempo'] as const;
-
-const MANAGED_TEMPLATE_IDS: readonly string[] = [
-  ...STRENGTH_TEMPLATE_IDS,
-  ...RUNNING_TEMPLATE_IDS,
-  ...LEGACY_TEMPLATE_IDS,
-];
+const MANAGED_TEMPLATE_IDS: readonly string[] = DEFAULT_TEMPLATE_IDS;
 
 const MAX_STRENGTH_DAYS = 6;
 const MIN_LONG_RUN_KM = 5;

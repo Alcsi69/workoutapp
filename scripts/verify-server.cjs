@@ -27,6 +27,7 @@ const { EXERCISE_CATALOG } = require('../.verify-build/db/catalogData.js');
 const repository = require('../.verify-build/db/repository.js');
 const syncService = require('../.verify-build/services/syncService.js');
 const authService = require('../.verify-build/services/authService.js');
+const sheetImport = require('../server/dist/server/src/sheetImport.js');
 const { buildClientSyncPushPayload } = syncService;
 
 /** Thin async facade over node:sqlite matching the expo-sqlite API surface. */
@@ -223,9 +224,14 @@ async function main() {
   // A real logged workout + a booking request on the client database.
   await repository.saveOnboardingPayload(db, onboarding);
   await repository.saveClientBillingProfile(db, billingProfile);
-  await repository.seedDefaultTemplates(db);
-  const templates = await repository.getWorkoutTemplates(db);
-  const strengthTemplate = templates.find((t) => t.sessionType === 'strength');
+  const strengthTemplate = await repository.createCustomTemplate(db, {
+    title: 'Upper A (custom)',
+    sessionType: 'strength',
+    blocks: [
+      { exerciseId: 'bench_press', targetSets: 4, targetReps: '6-8', restSeconds: 150 },
+      { exerciseId: 'barbell_row', targetSets: 4, targetReps: '8-10', restSeconds: 120 },
+    ],
+  });
   const sessionId = await repository.startSessionFromTemplate(db, strengthTemplate);
   const detail = await repository.getSessionDetail(db, sessionId);
   const firstBlock = detail.exerciseBlocks[0];
@@ -818,9 +824,14 @@ async function main() {
       // which Anna's account already owns on this server.
       await repository.saveOnboardingPayload(device.db, onboarding);
       await repository.saveClientBillingProfile(device.db, billingProfile);
-      await repository.seedDefaultTemplates(device.db);
-      const deviceTemplates = await repository.getWorkoutTemplates(device.db);
-      const deviceStrength = deviceTemplates.find((t) => t.sessionType === 'strength');
+      const deviceStrength = await repository.createCustomTemplate(device.db, {
+        title: 'Device Upper A (custom)',
+        sessionType: 'strength',
+        blocks: [
+          { exerciseId: 'bench_press', targetSets: 4, targetReps: '6-8', restSeconds: 150 },
+          { exerciseId: 'barbell_row', targetSets: 4, targetReps: '8-10', restSeconds: 120 },
+        ],
+      });
       const deviceSessionId = await repository.startSessionFromTemplate(device.db, deviceStrength);
       const deviceDetail = await repository.getSessionDetail(device.db, deviceSessionId);
       await repository.upsertSetLog(device.db, deviceDetail.exerciseBlocks[0].id, {
@@ -996,6 +1007,217 @@ async function main() {
     } finally {
       fresh.raw.close();
     }
+  });
+
+  // --- Phase 7E: default templates gone, admin edit/delete, sheet import -----
+  console.log('\nphase 7e: template cleanup, edit/delete, sheet import');
+
+  const IMPORT_TSV = [
+    'Day\tExercise\tWeight\tSets\tTarget Reps\tAchieved Reps\tComments',
+    'Day 1\tDeadlift (75%)\t87,5\t1\t5\t\t',
+    '\tDeadlift (85%)\t25; 20; 15\t3\t3\t1+\tspeed',
+    '\tToshiki Raises\tBW\t3\t8-12\t\t',
+    'Day 2\tOH Kettlebell Lunges\t20-20\t3\tAMRAP\t\tcoolio',
+    '\tBB BSS\t35?\t4\t9+\t\t',
+  ].join('\n');
+
+  await check('parseWorkoutSheet carries the day forward and preserves prescriptions', () => {
+    const sheet = sheetImport.parseWorkoutSheet(IMPORT_TSV);
+    assert.equal(sheet.days.length, 2, 'two days');
+    assert.deepEqual(
+      sheet.days.map((d) => d.day),
+      ['Day 1', 'Day 2'],
+    );
+    assert.equal(sheet.days[0].exercises.length, 3, 'column A carry-forward keeps the group');
+    const [dl75, dl85, toshiki] = sheet.days[0].exercises;
+    assert.equal(dl75.name, 'Deadlift');
+    assert.equal(dl75.prescription, '75%');
+    assert.equal(dl75.weightKg, 87.5, '87,5 parses to 87.5');
+    assert.equal(dl75.weightRaw, '87,5', 'the raw Hungarian decimal is kept');
+    assert.equal(dl75.targetSets, 1);
+    assert.equal(dl75.targetReps, '5');
+    assert.equal(dl85.weightKg, undefined, 'multi-set notation is not a single number');
+    assert.equal(dl85.weightRaw, '25; 20; 15');
+    assert.equal(dl85.targetReps, '3');
+    assert.equal(dl85.notes, 'speed · Elért: 1+');
+    assert.equal(toshiki.weightRaw, 'BW');
+    assert.equal(toshiki.weightKg, undefined);
+    assert.equal(toshiki.targetReps, '8-12');
+    const [lunges, bss] = sheet.days[1].exercises;
+    assert.equal(lunges.targetReps, 'AMRAP');
+    assert.equal(lunges.weightRaw, '20-20');
+    assert.equal(lunges.notes, 'coolio');
+    assert.equal(bss.weightRaw, '35?');
+    assert.equal(bss.targetReps, '9+');
+  });
+
+  await check('parseWorkoutSheet handles a quoted CSV target-reps cell', () => {
+    const csv = [
+      'Day,Exercise,Weight,Sets,Target Reps,Achieved,Comments',
+      'Day 1,Squat,100,3,"6+, 6-12, underh",,',
+    ].join('\n');
+    const sheet = sheetImport.parseWorkoutSheet(csv);
+    assert.equal(sheet.days[0].exercises.length, 1);
+    assert.equal(sheet.days[0].exercises[0].targetReps, '6+, 6-12, underh');
+    assert.equal(sheet.days[0].exercises[0].weightKg, 100);
+  });
+
+  await check('parseGoogleSheetUrl extracts the id and gid', () => {
+    assert.deepEqual(
+      sheetImport.parseGoogleSheetUrl('https://docs.google.com/spreadsheets/d/ABC123_-x/edit#gid=42'),
+      { id: 'ABC123_-x', gid: '42' },
+    );
+    assert.deepEqual(
+      sheetImport.parseGoogleSheetUrl('https://docs.google.com/spreadsheets/d/ABC/edit'),
+      { id: 'ABC' },
+    );
+    assert.equal(sheetImport.parseGoogleSheetUrl('https://example.com/x'), null);
+  });
+
+  await check('a fresh client database starts with an EMPTY template list', async () => {
+    const fresh = await createFreshClientDatabase();
+    try {
+      await repository.removeDefaultTemplates(fresh.db);
+      const templates = await repository.getWorkoutTemplates(fresh.db);
+      assert.equal(templates.length, 0, 'no default templates for a new client');
+    } finally {
+      fresh.raw.close();
+    }
+  });
+
+  await check('server startup cleanup leaves a fresh database with no default templates', async () => {
+    const fresh = await startCoachServer({
+      dbPath: ':memory:',
+      port: 0,
+      host: '127.0.0.1',
+      adminToken: 'phase7e-admin-token',
+    });
+    try {
+      const res = await http(`${fresh.url}/api/admin/templates`, {
+        headers: bearer('phase7e-admin-token'),
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.templates.length, 0, 'no seeded global default templates');
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  await check('POST /api/admin/clients/:id/import-sheet creates one plan per day + auto-creates exercises', async () => {
+    const res = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/import-sheet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({ text: IMPORT_TSV }),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.userId, userA);
+    assert.equal(res.body.days.length, 2, 'one template per day');
+    assert.ok(
+      res.body.createdExercises.some((e) => e.nameHu === 'Toshiki Raises'),
+      'unknown exercises are auto-created',
+    );
+
+    const detail = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}`, {
+      headers: adminAuth,
+    });
+    const day1 = detail.body.templates.find((t) => t.title === 'Day 1');
+    assert.ok(day1 !== undefined, 'Day 1 plan exists');
+    assert.equal(day1.exercises.length, 3);
+    assert.equal(day1.exercises[0].targetWeight, '87,5', 'the exact target weight is preserved');
+    assert.equal(day1.exercises[0].targetReps, '5');
+    assert.ok(day1.exercises.some((b) => b.exercise.nameHu === 'Toshiki Raises'));
+  });
+
+  await check('import is idempotent: re-importing updates the same per-day plans', async () => {
+    const res = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/import-sheet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({ text: IMPORT_TSV }),
+    });
+    assert.equal(res.status, 201);
+    const detail = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}`, {
+      headers: adminAuth,
+    });
+    const dayCount = detail.body.templates.filter((t) => t.title === 'Day 1').length;
+    assert.equal(dayCount, 1, 're-import updates in place, never duplicates');
+  });
+
+  await check('pull delivers imported custom exercises so blocks hydrate', async () => {
+    const pull = await http(`${apiBase}/api/sync/pull`, { headers: bearer(tokenA) });
+    assert.equal(pull.status, 200);
+    assert.ok(Array.isArray(pull.body.catalog), 'pull carries the custom catalog');
+    assert.ok(pull.body.catalog.some((e) => e.nameHu === 'Toshiki Raises'));
+    const day1 = pull.body.templates.find((t) => t.title === 'Day 1');
+    assert.ok(day1 !== undefined);
+    assert.ok(day1.exercises.some((b) => b.exercise.nameHu === 'Toshiki Raises'));
+  });
+
+  let editTemplateId = null;
+  await check('PUT /api/admin/templates/:id updates title, note and blocks in place', async () => {
+    const created = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({
+        title: 'Szerkesztendő terv',
+        sessionType: 'strength',
+        coachNote: 'eredeti',
+        blocks: [{ exerciseId: 'bench_press', targetSets: 3, targetReps: '8-10', restSeconds: 90 }],
+      }),
+    });
+    assert.equal(created.status, 201);
+    editTemplateId = created.body.template.id;
+
+    const updated = await http(`${apiBase}/api/admin/templates/${encodeURIComponent(editTemplateId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({
+        title: 'Módosított terv',
+        sessionType: 'hybrid',
+        coachNote: 'új jegyzet',
+        blocks: [
+          { exerciseId: 'front_squat', targetSets: 5, targetReps: '3-5', restSeconds: 180, targetWeight: 'BW' },
+          { exerciseId: 'bench_press', targetSets: 4, targetReps: 'AMRAP', restSeconds: 120 },
+        ],
+      }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.template.title, 'Módosított terv');
+    assert.equal(updated.body.template.sessionType, 'hybrid');
+    assert.equal(updated.body.template.coachNote, 'új jegyzet');
+    assert.equal(updated.body.template.exercises.length, 2, 'blocks replaced');
+    assert.equal(updated.body.template.exercises[0].exerciseId, 'front_squat');
+    assert.equal(updated.body.template.exercises[0].targetWeight, 'BW');
+    assert.equal(updated.body.template.exercises[1].targetReps, 'AMRAP');
+
+    const detail = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}`, {
+      headers: adminAuth,
+    });
+    assert.ok(
+      detail.body.templates.some((t) => t.id === editTemplateId && t.title === 'Módosított terv'),
+      'the edit stays owned by the client',
+    );
+  });
+
+  await check('PUT /api/admin/templates/:id 404s for an unknown template', async () => {
+    const res = await http(`${apiBase}/api/admin/templates/does_not_exist`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...adminAuth },
+      body: JSON.stringify({ title: 'x', blocks: [{ exerciseId: 'bench_press' }] }),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  await check('DELETE /api/admin/templates/:id removes the template', async () => {
+    const del = await http(`${apiBase}/api/admin/templates/${encodeURIComponent(editTemplateId)}`, {
+      method: 'DELETE',
+      headers: adminAuth,
+    });
+    assert.equal(del.status, 200);
+    assert.equal(del.body.deleted, true);
+    const detail = await http(`${apiBase}/api/admin/clients/${encodeURIComponent(userA)}`, {
+      headers: adminAuth,
+    });
+    assert.ok(!detail.body.templates.some((t) => t.id === editTemplateId));
   });
 
   raw.close();

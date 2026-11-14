@@ -33,7 +33,6 @@ import {
   wipeLocalUserData,
 } from '../db/repository';
 import { syncPull, syncPush } from './syncService';
-import { generateProgramFromProfile } from './routineGenerator';
 
 /** The subset of the Fetch API we rely on (no DOM lib in the verify build). */
 interface FetchResponse {
@@ -288,11 +287,8 @@ export async function loginWithCredentials(
     await importSessionLogs(db, state.sessions);
 
     // Full pull reconciles coach plans/bookings and (re)applies the snapshot.
+    // Coach-assigned plans land here; the client no longer auto-generates one.
     await syncPull(db, url);
-
-    // Rebuild the tailored program from the restored profile so Sablonok is
-    // never empty on a fresh device. Managed templates are idempotent.
-    await generateProgramFromProfile(db);
   } catch (cause: unknown) {
     await clearLocalAuthSession(db);
     throw cause;

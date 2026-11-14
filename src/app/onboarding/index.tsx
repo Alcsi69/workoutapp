@@ -27,7 +27,6 @@ import {
 import { registerAccount, validateNewAccount } from '../../services/authService';
 import { validateClientBillingProfile } from '../../services/billing';
 import { describeBillingErrors } from '../../services/billingMessages';
-import { generateProgramFromProfile } from '../../services/routineGenerator';
 import hu from '../../i18n/hu';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
 
@@ -146,8 +145,6 @@ export default function OnboardingScreen() {
 
       await saveOnboardingPayload(db, payload);
       await saveClientBillingProfile(db, billingInput);
-      // Build the tailored program immediately so the tabs show the real plan.
-      await generateProgramFromProfile(db);
       useOnboardingStore.getState().reset();
       router.replace('/(tabs)');
     } catch (cause: unknown) {

@@ -15,7 +15,7 @@ import {
 import type { ActiveSessionSummary } from '../../db/repository';
 import { pickRecommendedSession } from '../../services/recommendation';
 import { useSyncRefresh } from '../../hooks/useSyncRefresh';
-import { formatTodayHu } from '../../services/format';
+import { formatTodayHu, formatTargetPrescription } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
 import type {
@@ -195,7 +195,7 @@ export default function WorkoutHomeScreen() {
               <View key={block.id} style={styles.blockRow}>
                 <Text style={styles.blockName}>{block.exercise.nameHu}</Text>
                 <Text style={styles.blockTarget}>
-                  {block.targetSets ?? 1} × {block.targetReps ?? '—'}
+                  {formatTargetPrescription(block.targetSets, block.targetReps, block.targetWeight)}
                 </Text>
               </View>
             ))}

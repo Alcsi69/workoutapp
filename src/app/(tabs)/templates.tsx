@@ -15,7 +15,7 @@ import {
 } from '../../db/repository';
 import { generateProgramFromProfile } from '../../services/routineGenerator';
 import { useSyncRefresh } from '../../hooks/useSyncRefresh';
-import { formatRestHu } from '../../services/format';
+import { formatRestHu, formatTargetPrescription } from '../../services/format';
 import hu from '../../i18n/hu';
 import { colors, spacing, typography } from '../../theme/tokens';
 import type { ExerciseCatalogItem, LoadScore, WorkoutTemplate } from '../../types/workout';
@@ -65,7 +65,7 @@ function TemplateCard({
             <View style={styles.blockHeadRow}>
               <Text style={styles.blockName}>{block.exercise.nameHu}</Text>
               <Text style={styles.blockTarget}>
-                {block.targetSets ?? 1} × {block.targetReps ?? '—'}
+                {formatTargetPrescription(block.targetSets, block.targetReps, block.targetWeight)}
               </Text>
             </View>
             <View style={styles.blockMetaRow}>

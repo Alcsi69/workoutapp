@@ -7,6 +7,7 @@ import {
   formatDateHu,
   formatOneRepMaxKg,
   formatRestHu,
+  formatTargetPrescription,
   formatWeightKg,
 } from '../../services/format';
 import { computeNextTargetHint } from '../../services/analytics';
@@ -159,7 +160,7 @@ export function ExerciseBlockCard({
     );
   };
 
-  const target = `${block.targetSets ?? 1} × ${block.targetReps ?? '—'}`;
+  const target = formatTargetPrescription(block.targetSets, block.targetReps, block.targetWeight);
   const showPlates = shouldOfferPlateCalculator(block.exercise);
 
   /** Weight to prefill the plate sheet with: the first open row's weight, else the first row's. */

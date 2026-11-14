@@ -6,8 +6,7 @@ import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrate } from './schema';
 import { seedExerciseCatalog } from './seed';
-import { getUserProfile, seedCoachingSlots, seedDefaultTemplates } from './repository';
-import { generateProgramFromProfile } from '../services/routineGenerator';
+import { removeDefaultTemplates, seedCoachingSlots } from './repository';
 
 export const DATABASE_NAME = 'workout.db';
 
@@ -15,13 +14,14 @@ let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 /**
  * Returns the shared database instance, initializing it on first call:
- * open -> migrate -> seed catalog -> (generate program | seed fallback
- * templates). The promise is cached, so initialization runs once per app process
- * and concurrent callers await the same work.
+ * open -> migrate -> seed catalog -> clear default templates -> seed slots.
+ * The promise is cached, so initialization runs once per app process and
+ * concurrent callers await the same work.
  *
- * With a saved profile the generated program is rebuilt so existing databases
- * converge on the current split; without one the minimal fallback templates are
- * seeded for the pre-onboarding state.
+ * A client starts with an EMPTY template list: neither a pre-seeded default
+ * program nor a profile-generated one is created here. Plans only appear once
+ * the coach assigns one (via sync) or the user builds one under Sablonok. Any
+ * default templates an older build left behind are swept on startup.
  */
 export function getDatabase(): Promise<SQLiteDatabase> {
   if (databasePromise === null) {
@@ -29,13 +29,8 @@ export function getDatabase(): Promise<SQLiteDatabase> {
       const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
       await migrate(db);
       await seedExerciseCatalog(db);
+      await removeDefaultTemplates(db);
       await seedCoachingSlots(db);
-      const profile = await getUserProfile(db);
-      if (profile === null) {
-        await seedDefaultTemplates(db);
-      } else {
-        await generateProgramFromProfile(db);
-      }
       return db;
     })();
   }

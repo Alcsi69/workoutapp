@@ -394,6 +394,50 @@ const INSERT_CUSTOM_EXERCISE_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 1);
 `;
 
+/**
+ * Upserts an exercise pushed by the coach (e.g. one a sheet import auto-created)
+ * so coach-assigned blocks referencing it hydrate instead of being dropped by
+ * the catalog join. Custom-first: an already-present row keeps its own data.
+ */
+const UPSERT_SYNCED_EXERCISE_SQL = `
+  INSERT INTO exercise_catalog
+    (id, name_hu, name_en, category, equipment, movement_pattern, primary_muscles,
+     axial_load_score, knee_stress_score, default_substitute_ids, is_custom)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  ON CONFLICT(id) DO UPDATE SET
+    name_hu = excluded.name_hu,
+    name_en = excluded.name_en,
+    category = excluded.category,
+    equipment = excluded.equipment,
+    movement_pattern = excluded.movement_pattern,
+    primary_muscles = excluded.primary_muscles,
+    axial_load_score = excluded.axial_load_score,
+    knee_stress_score = excluded.knee_stress_score,
+    default_substitute_ids = excluded.default_substitute_ids;
+`;
+
+/** Upserts coach-pushed catalog items (custom exercises) into the local catalog. */
+async function upsertSyncedExercises(
+  db: SQLiteDatabase,
+  items: readonly ExerciseCatalogItem[],
+): Promise<void> {
+  for (const item of items) {
+    await db.runAsync(
+      UPSERT_SYNCED_EXERCISE_SQL,
+      item.id,
+      item.nameHu,
+      item.nameEn,
+      item.category,
+      item.equipment,
+      item.movementPattern,
+      JSON.stringify(item.primaryMuscles),
+      item.axialLoadScore,
+      item.kneeStressScore,
+      JSON.stringify(item.defaultSubstituteIds),
+    );
+  }
+}
+
 /** Sensible defaults the "custom exercise" form does not need to collect. */
 const CUSTOM_EXERCISE_DEFAULT_CATEGORY: ExerciseCategory = 'isolation';
 const CUSTOM_EXERCISE_DEFAULT_PATTERN: MovementPattern = 'other';
@@ -464,7 +508,7 @@ const SELECT_TEMPLATES_SQL = `
 const SELECT_TEMPLATE_BLOCKS_SQL = `
   SELECT b.id, b.template_id, b.order_index, b.exercise_id,
          b.substituted_from_exercise_id, b.rest_seconds, b.notes,
-         b.target_sets, b.target_reps,
+         b.target_sets, b.target_reps, b.target_weight,
          c.id AS catalog_id,
          c.name_hu, c.name_en, c.category,
          COALESCE(c.equipment, 'barbell') AS equipment,
@@ -498,6 +542,9 @@ function toTemplateExercise(row: TemplateExerciseJoinRow): WorkoutTemplateExerci
   }
   if (row.target_reps !== null) {
     block.targetReps = row.target_reps;
+  }
+  if (row.target_weight !== null) {
+    block.targetWeight = row.target_weight;
   }
 
   return block;
@@ -545,189 +592,48 @@ export async function getWorkoutTemplateById(
   return templates.find((template) => template.id === templateId) ?? null;
 }
 
-// --- Seeded default program -------------------------------------------------
+// --- Default template cleanup (Phase 7E) ------------------------------------
+//
+// The app no longer ships a pre-seeded default program, nor auto-generates one
+// from the onboarding profile: a client starts with an EMPTY template list until
+// the coach assigns a plan in /admin (or the user builds one under Sablonok).
+// These ids name every template an older build may have seeded or generated, so
+// the startup cleanup removes them from existing databases too.
 
-interface TemplateBlockSeed {
-  exerciseId: string;
-  targetSets: number;
-  targetReps: string;
-  restSeconds: number;
-  notes?: string;
-  substitutedFromExerciseId?: string;
-}
-
-interface TemplateSeed {
-  id: string;
-  title: string;
-  sessionType: SessionType;
-  goal: TrainingGoal;
-  blocks: TemplateBlockSeed[];
-}
-
-/**
- * Default program: 4-day powerbuilding split + 3 running days.
- * Ids are stable so re-seeding is a no-op (INSERT OR IGNORE) and never clobbers
- * a template the user has edited.
- */
-export const DEFAULT_TEMPLATE_SEEDS: readonly TemplateSeed[] = [
-  {
-    id: 'tpl_upper_a',
-    title: 'Upper A',
-    sessionType: 'strength',
-    goal: 'powerbuilding',
-    blocks: [
-      { exerciseId: 'bench_press', targetSets: 4, targetReps: '6-8', restSeconds: 150 },
-      { exerciseId: 'overhead_press', targetSets: 3, targetReps: '8-10', restSeconds: 120 },
-      { exerciseId: 'barbell_row', targetSets: 4, targetReps: '8-10', restSeconds: 120 },
-      { exerciseId: 'weighted_pullup', targetSets: 3, targetReps: '8-10', restSeconds: 120 },
-    ],
-  },
-  {
-    id: 'tpl_lower_a',
-    title: 'Lower A - Elölguggolás',
-    sessionType: 'strength',
-    goal: 'powerbuilding',
-    blocks: [
-      { exerciseId: 'front_squat', targetSets: 5, targetReps: '5', restSeconds: 180 },
-      { exerciseId: 'romanian_deadlift', targetSets: 3, targetReps: '8-10', restSeconds: 150 },
-      { exerciseId: 'leg_extension', targetSets: 3, targetReps: '12-15', restSeconds: 90 },
-      { exerciseId: 'adductor_machine', targetSets: 3, targetReps: '15-20', restSeconds: 60 },
-    ],
-  },
-  {
-    id: 'tpl_upper_b',
-    title: 'Upper B',
-    sessionType: 'strength',
-    goal: 'powerbuilding',
-    blocks: [
-      {
-        exerciseId: 'bench_press',
-        targetSets: 4,
-        targetReps: '5',
-        restSeconds: 180,
-        notes: 'Csúcssorozat, utána 2 backoff sorozat 8 ismétléssel.',
-      },
-      { exerciseId: 'barbell_row', targetSets: 4, targetReps: '6-8', restSeconds: 150 },
-      { exerciseId: 'overhead_press', targetSets: 3, targetReps: '10-12', restSeconds: 90 },
-      { exerciseId: 'weighted_pullup', targetSets: 3, targetReps: '6-8', restSeconds: 150 },
-    ],
-  },
-  {
-    id: 'tpl_lower_b',
-    title: 'Lower B - Román felhúzás & Öves guggolás',
-    sessionType: 'strength',
-    goal: 'powerbuilding',
-    blocks: [
-      { exerciseId: 'romanian_deadlift', targetSets: 4, targetReps: '6-8', restSeconds: 180 },
-      {
-        exerciseId: 'belt_squat',
-        targetSets: 4,
-        targetReps: '8-10',
-        restSeconds: 150,
-        notes: 'Alacsony tengelyterhelés — térdkímélő guggolás.',
-      },
-      { exerciseId: 'leg_extension', targetSets: 3, targetReps: '12', restSeconds: 90 },
-      { exerciseId: 'adductor_machine', targetSets: 3, targetReps: '15', restSeconds: 60 },
-    ],
-  },
-  {
-    id: 'tpl_run_5k',
-    title: '5 km futás',
-    sessionType: 'running',
-    goal: 'hybrid_strength_running',
-    blocks: [
-      {
-        exerciseId: 'run_5k',
-        targetSets: 1,
-        targetReps: '5 km',
-        restSeconds: 0,
-        notes: 'Könnyű tempó, beszélgetős intenzitás.',
-      },
-    ],
-  },
-  {
-    id: 'tpl_run_7k',
-    title: '7 km futás',
-    sessionType: 'running',
-    goal: 'hybrid_strength_running',
-    blocks: [
-      {
-        exerciseId: 'run_7k',
-        targetSets: 1,
-        targetReps: '7 km',
-        restSeconds: 0,
-        notes: 'Hosszú, egyenletes futás.',
-      },
-    ],
-  },
-  {
-    id: 'tpl_run_tempo',
-    title: '5 km tempó futás',
-    sessionType: 'running',
-    goal: 'hybrid_strength_running',
-    blocks: [
-      {
-        exerciseId: 'run_5k',
-        targetSets: 1,
-        targetReps: '5 km',
-        restSeconds: 0,
-        notes: '1 km bemelegítés + 3 km küszöbtempó + 1 km levezetés.',
-      },
-    ],
-  },
+export const DEFAULT_TEMPLATE_IDS: readonly string[] = [
+  'tpl_full_a',
+  'tpl_full_b',
+  'tpl_upper_a',
+  'tpl_lower_a',
+  'tpl_upper_b',
+  'tpl_lower_b',
+  'tpl_run_1',
+  'tpl_run_2',
+  'tpl_run_3',
+  'tpl_run_4',
+  'tpl_run_5',
+  'tpl_run_6',
+  'tpl_run_7',
+  // Running ids used by earlier seed versions; deleted so they never duplicate.
+  'tpl_run_5k',
+  'tpl_run_7k',
+  'tpl_run_tempo',
 ];
-
-const INSERT_TEMPLATE_SQL = `
-  INSERT OR IGNORE INTO workout_templates (id, title, session_type, goal, created_at)
-  VALUES (?, ?, ?, ?, ?);
-`;
 
 const INSERT_TEMPLATE_BLOCK_SQL = `
   INSERT OR IGNORE INTO template_exercise_blocks
     (id, template_id, order_index, exercise_id, substituted_from_exercise_id,
-     rest_seconds, notes, target_sets, target_reps)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+     rest_seconds, notes, target_sets, target_reps, target_weight)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `;
 
 /**
- * Seeds the default 4-day powerbuilding + 3-day running program.
- * Idempotent: returns the number of templates actually inserted (0 on re-run).
+ * Startup cleanup: deletes any pre-seeded / auto-generated default template so
+ * existing databases converge on an empty list as well. User-built templates
+ * (`tpl_user_*`) and coach-assigned plans (`source = 'coach'`) are never touched.
  */
-export async function seedDefaultTemplates(db: SQLiteDatabase): Promise<number> {
-  const createdAt = new Date().toISOString();
-  let inserted = 0;
-
-  await db.withTransactionAsync(async () => {
-    for (const seed of DEFAULT_TEMPLATE_SEEDS) {
-      const result = await db.runAsync(
-        INSERT_TEMPLATE_SQL,
-        seed.id,
-        seed.title,
-        seed.sessionType,
-        seed.goal,
-        createdAt,
-      );
-      inserted += result.changes;
-
-      for (let index = 0; index < seed.blocks.length; index += 1) {
-        const block = seed.blocks[index];
-        await db.runAsync(
-          INSERT_TEMPLATE_BLOCK_SQL,
-          `${seed.id}:${index}`,
-          seed.id,
-          index,
-          block.exerciseId,
-          block.substitutedFromExerciseId ?? null,
-          block.restSeconds,
-          block.notes ?? null,
-          block.targetSets,
-          block.targetReps,
-        );
-      }
-    }
-  });
-
-  return inserted;
+export async function removeDefaultTemplates(db: SQLiteDatabase): Promise<number> {
+  return deleteTemplatesByIds(db, DEFAULT_TEMPLATE_IDS);
 }
 
 // --- Template mutation (Phase 4) --------------------------------------------
@@ -816,6 +722,7 @@ export async function createCustomTemplate(
         block.notes ?? null,
         block.targetSets ?? DEFAULT_CUSTOM_TARGET_SETS,
         block.targetReps ?? DEFAULT_CUSTOM_TARGET_REPS,
+        block.targetWeight ?? null,
       );
     }
   });
@@ -935,6 +842,7 @@ export async function upsertRunningTemplate(
       input.notes ?? null,
       1,
       input.targetReps,
+      null,
     );
   });
 }
@@ -950,6 +858,8 @@ export interface TemplateProgramBlockSeed {
   targetSets: number;
   targetReps: string;
   restSeconds: number;
+  /** Free-form weight prescription carried through an import (optional). */
+  targetWeight?: string;
   notes?: string;
 }
 
@@ -1003,6 +913,7 @@ export async function replaceTemplateProgram(
         block.notes ?? null,
         block.targetSets,
         block.targetReps,
+        block.targetWeight ?? null,
       );
     }
   });
@@ -1611,8 +1522,8 @@ export async function startSessionFromTemplate(
       await db.runAsync(
         `INSERT INTO session_exercise_blocks
            (id, session_id, order_index, exercise_id, substituted_from_exercise_id,
-            rest_seconds, notes, target_sets, target_reps)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+            rest_seconds, notes, target_sets, target_reps, target_weight)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         `${sessionId}:${block.orderIndex}`,
         sessionId,
         block.orderIndex,
@@ -1622,6 +1533,7 @@ export async function startSessionFromTemplate(
         block.notes ?? null,
         block.targetSets ?? null,
         block.targetReps ?? null,
+        block.targetWeight ?? null,
       );
     }
   });
@@ -1667,7 +1579,7 @@ const SELECT_SESSION_DETAIL_SQL = `
 const SELECT_SESSION_BLOCKS_SQL = `
   SELECT b.id, b.session_id, b.order_index, b.exercise_id,
          b.substituted_from_exercise_id, b.rest_seconds, b.notes,
-         b.target_sets, b.target_reps,
+         b.target_sets, b.target_reps, b.target_weight,
          c.id AS catalog_id,
          c.name_hu, c.name_en, c.category,
          COALESCE(c.equipment, 'barbell') AS equipment,
@@ -1812,6 +1724,9 @@ export async function getSessionDetail(
     }
     if (row.target_reps !== null) {
       block.targetReps = row.target_reps;
+    }
+    if (row.target_weight !== null) {
+      block.targetWeight = row.target_weight;
     }
     return block;
   });
@@ -2502,6 +2417,13 @@ export async function applyClientSyncPullPayload(
   }
 
   await db.withTransactionAsync(async () => {
+    // --- 0. Coach-pushed catalog entries -----------------------------------
+    // Imported exercises must land before the coach templates that reference
+    // them, so the catalog join can hydrate every assigned block.
+    if (Array.isArray(payload.catalog) && payload.catalog.length > 0) {
+      await upsertSyncedExercises(db, payload.catalog);
+    }
+
     // --- 1. Coach templates -------------------------------------------------
     const incomingIds = new Set(payload.templates.map((template) => template.id));
     const existing = await db.getAllAsync<{ id: string }>(SELECT_COACH_TEMPLATE_IDS_SQL);
@@ -2537,6 +2459,7 @@ export async function applyClientSyncPullPayload(
           block.notes ?? null,
           block.targetSets ?? null,
           block.targetReps ?? null,
+          block.targetWeight ?? null,
         );
       }
     }

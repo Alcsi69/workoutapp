@@ -25,6 +25,7 @@
       <div class="conn" id="conn">
         <span class="dot" id="connDot"></span>
         <span id="connText">Kapcsolódás…</span>
+        <button class="btn small ghost" id="tokenBtn" title="Edzői admin token beállítása">Token</button>
       </div>
     </header>
 
@@ -73,7 +74,10 @@
               <textarea id="builderNote" rows="2" placeholder="pl. Térdkímélő: alacsony tengelyterhelés."></textarea>
             </label>
             <div class="block-list" id="builderBlocks"></div>
-            <button class="btn primary" id="builderSave">Terv kiosztása</button>
+            <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn primary" id="builderSave">Terv kiosztása</button>
+              <button class="btn ghost" id="builderCancel" hidden>Mégse / Új terv</button>
+            </div>
             <div id="builderExisting" class="list"></div>
           </div>
           <div class="card col-picker">
@@ -82,6 +86,24 @@
             <div class="chips" id="exerciseFilters"></div>
             <div class="exercise-list" id="exerciseList"></div>
           </div>
+        </div>
+
+        <div class="card" id="importCard" style="margin-top:20px;">
+          <h2>Google Sheets / Táblázat importálása</h2>
+          <p class="muted" style="margin-top:0;">
+            Tölts fel egy többnapos edzéstervet. Minden nap (A oszlop) egy külön edzői terv lesz a kiválasztott ügyfélnek.
+            Oszlopok: A = Nap, B = Gyakorlat, C = Súly, D = Sorozat, E = Cél ismétlés, F = Elért ismétlés, G = Megjegyzés.
+          </p>
+          <label class="field">
+            <span>Google Sheets link (nyilvánosan megosztott)</span>
+            <input id="importUrl" type="text" placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=0" />
+          </label>
+          <button class="btn" id="importUrlBtn">Importálás linkről</button>
+          <label class="field" style="margin-top:12px;">
+            <span>Vagy illeszd be a táblázatot (Ctrl+C / CSV)</span>
+            <textarea id="importText" rows="6" placeholder="Nap 1&#9;Deadlift (75%)&#9;87,5&#9;1&#9;5&#9;&#9;&#10;…"></textarea>
+          </label>
+          <button class="btn primary" id="importTextBtn">Importálás beillesztésből</button>
         </div>
       </section>
 
